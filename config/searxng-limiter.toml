@@ -1,0 +1,11 @@
+# Limiter configuration for SearXNG
+[botdetection.ip_limit]
+# activate link_token method in the ip_limit method
+link_token = true
+
+[botdetection.ip_lists]
+pass_searxng_org = [
+  '185.199.108.0/22',
+  '140.82.112.0/20',
+  '143.55.64.0/20',
+]
