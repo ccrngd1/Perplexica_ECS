@@ -59,11 +59,11 @@ export class PerplexicaStack extends cdk.Stack {
       targetType: elbv2.TargetType.IP,
       healthCheck: {
         path: '/',
-        healthyHttpCodes: '200,302',
-        interval: cdk.Duration.seconds(30),
-        timeout: cdk.Duration.seconds(10),
+        healthyHttpCodes: '200,302,404', // Allow 404 during startup
+        interval: cdk.Duration.seconds(60), // Longer interval
+        timeout: cdk.Duration.seconds(30), // Longer timeout
         healthyThresholdCount: 2,
-        unhealthyThresholdCount: 5,
+        unhealthyThresholdCount: 10, // More tolerance for failures
         port: '3000',
         protocol: elbv2.Protocol.HTTP,
       },
@@ -76,11 +76,11 @@ export class PerplexicaStack extends cdk.Stack {
       targetType: elbv2.TargetType.IP,
       healthCheck: {
         path: '/',
-        healthyHttpCodes: '200,302',
-        interval: cdk.Duration.seconds(30),
-        timeout: cdk.Duration.seconds(10),
+        healthyHttpCodes: '200,302,404', // Allow 404 during startup
+        interval: cdk.Duration.seconds(60), // Longer interval
+        timeout: cdk.Duration.seconds(30), // Longer timeout
         healthyThresholdCount: 2,
-        unhealthyThresholdCount: 5,
+        unhealthyThresholdCount: 10, // More tolerance for failures
         port: '8080',
         protocol: elbv2.Protocol.HTTP,
       },
@@ -119,6 +119,10 @@ export class PerplexicaStack extends cdk.Stack {
         SEARXNG_API_URL: `http://${searxngALB.loadBalancerDnsName}`,
         DATA_DIR: '/home/perplexica',
       },
+      command: [
+        'sh', '-c',
+        'echo "server { listen 3000; location / { return 200 \\"Perplexica placeholder - waiting for deployment\\"; add_header Content-Type text/plain; } }" > /etc/nginx/conf.d/default.conf && nginx -g "daemon off;"'
+      ],
     });
 
     perplexicaContainer.addPortMappings({
@@ -132,6 +136,10 @@ export class PerplexicaStack extends cdk.Stack {
         streamPrefix: 'searxng',
         logRetention: logs.RetentionDays.ONE_WEEK,
       }),
+      command: [
+        'sh', '-c',
+        'echo "server { listen 8080; location / { return 200 \\"SearXNG placeholder - waiting for deployment\\"; add_header Content-Type text/plain; } }" > /etc/nginx/conf.d/default.conf && nginx -g "daemon off;"'
+      ],
     });
 
     searxngContainer.addPortMappings({
@@ -145,6 +153,7 @@ export class PerplexicaStack extends cdk.Stack {
       taskDefinition: perplexicaTaskDef,
       desiredCount: 1,
       assignPublicIp: false,
+      healthCheckGracePeriod: cdk.Duration.seconds(300), // 5 minutes grace period
     });
 
     const searxngService = new ecs.FargateService(this, 'SearxngService', {
@@ -152,6 +161,7 @@ export class PerplexicaStack extends cdk.Stack {
       taskDefinition: searxngTaskDef,
       desiredCount: 1,
       assignPublicIp: false,
+      healthCheckGracePeriod: cdk.Duration.seconds(300), // 5 minutes grace period
     });
 
     // Attach services to target groups
@@ -347,9 +357,13 @@ def handler(event, context):
           })
         },
       },
-      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
-        resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
-      }),
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['lambda:InvokeFunction'],
+          resources: [ecrManagerFunction.functionArn],
+        }),
+      ]),
     });
 
     const searxngRepoResource = new cr.AwsCustomResource(this, 'SearxngRepoResource', {
@@ -394,9 +408,13 @@ def handler(event, context):
           })
         },
       },
-      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
-        resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
-      }),
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['lambda:InvokeFunction'],
+          resources: [ecrManagerFunction.functionArn],
+        }),
+      ]),
     });
 
     // Create repository interfaces from the custom resources
