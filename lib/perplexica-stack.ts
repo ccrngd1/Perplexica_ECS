@@ -9,6 +9,8 @@ import * as codepipelineActions from 'aws-cdk-lib/aws-codepipeline-actions';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 
 export class PerplexicaStack extends cdk.Stack {
@@ -27,20 +29,8 @@ export class PerplexicaStack extends cdk.Stack {
       containerInsights: true,
     });
 
-    // ECR Repositories
-    const perplexicaRepo = new ecr.Repository(this, 'PerplexicaRepo', {
-      repositoryName: 'perplexica-app',
-      lifecycleRules: [{
-        maxImageCount: 10,
-      }],
-    });
-
-    const searxngRepo = new ecr.Repository(this, 'SearxngRepo', {
-      repositoryName: 'searxng-custom',
-      lifecycleRules: [{
-        maxImageCount: 10,
-      }],
-    });
+    // ECR Repositories - Create or use existing with custom resource
+    const { perplexicaRepo, searxngRepo } = this.createEcrRepositoriesWithFallback();
 
     // S3 Bucket for artifacts
     const artifactsBucket = new s3.Bucket(this, 'ArtifactsBucket', {
@@ -214,8 +204,221 @@ export class PerplexicaStack extends cdk.Stack {
     });
   }
 
+  private createEcrRepositoriesWithFallback(): { perplexicaRepo: ecr.IRepository; searxngRepo: ecr.IRepository } {
+    // Create a custom resource that handles ECR repository creation with fallback
+    const ecrManagerFunction = new lambda.Function(this, 'EcrManagerFunction', {
+      runtime: lambda.Runtime.PYTHON_3_9,
+      handler: 'index.handler',
+      timeout: cdk.Duration.seconds(60),
+      code: lambda.Code.fromInline(`
+import boto3
+import json
+import logging
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def handler(event, context):
+    ecr = boto3.client('ecr')
+    
+    request_type = event['RequestType']
+    repo_name = event['ResourceProperties']['RepositoryName']
+    
+    try:
+        if request_type == 'Create':
+            # Try to create the repository
+            try:
+                response = ecr.create_repository(
+                    repositoryName=repo_name,
+                    imageScanningConfiguration={'scanOnPush': False}
+                )
+                logger.info(f"Created repository: {repo_name}")
+                repo_uri = response['repository']['repositoryUri']
+            except ecr.exceptions.RepositoryAlreadyExistsException:
+                # Repository exists, get its details
+                logger.info(f"Repository {repo_name} already exists, using existing one")
+                response = ecr.describe_repositories(repositoryNames=[repo_name])
+                repo_uri = response['repositories'][0]['repositoryUri']
+            
+            # Set lifecycle policy
+            try:
+                ecr.put_lifecycle_policy(
+                    repositoryName=repo_name,
+                    lifecyclePolicyText=json.dumps({
+                        "rules": [{
+                            "rulePriority": 1,
+                            "selection": {
+                                "tagStatus": "any",
+                                "countType": "imageCountMoreThan",
+                                "countNumber": 10
+                            },
+                            "action": {
+                                "type": "expire"
+                            }
+                        }]
+                    })
+                )
+            except Exception as e:
+                logger.warning(f"Could not set lifecycle policy: {str(e)}")
+            
+            return {
+                'PhysicalResourceId': repo_name,
+                'Data': {
+                    'RepositoryUri': repo_uri,
+                    'RepositoryName': repo_name
+                }
+            }
+            
+        elif request_type == 'Delete':
+            # Don't delete the repository on stack deletion (retain policy)
+            logger.info(f"Retaining repository: {repo_name}")
+            return {'PhysicalResourceId': repo_name}
+            
+        else:  # Update
+            # Get current repository details
+            response = ecr.describe_repositories(repositoryNames=[repo_name])
+            repo_uri = response['repositories'][0]['repositoryUri']
+            return {
+                'PhysicalResourceId': repo_name,
+                'Data': {
+                    'RepositoryUri': repo_uri,
+                    'RepositoryName': repo_name
+                }
+            }
+            
+    except Exception as e:
+        logger.error(f"Error managing repository {repo_name}: {str(e)}")
+        raise e
+      `),
+    });
+
+    // Grant ECR permissions to the Lambda function
+    ecrManagerFunction.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'ecr:CreateRepository',
+        'ecr:DescribeRepositories',
+        'ecr:PutLifecyclePolicy',
+        'ecr:GetLifecyclePolicy',
+      ],
+      resources: ['*'],
+    }));
+
+    // Custom resources for each repository
+    const perplexicaRepoResource = new cr.AwsCustomResource(this, 'PerplexicaRepoResource', {
+      onCreate: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: ecrManagerFunction.functionName,
+          Payload: JSON.stringify({
+            RequestType: 'Create',
+            ResourceProperties: {
+              RepositoryName: 'perplexica-app'
+            }
+          })
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('perplexica-app'),
+      },
+      onUpdate: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: ecrManagerFunction.functionName,
+          Payload: JSON.stringify({
+            RequestType: 'Update',
+            ResourceProperties: {
+              RepositoryName: 'perplexica-app'
+            }
+          })
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('perplexica-app'),
+      },
+      onDelete: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: ecrManagerFunction.functionName,
+          Payload: JSON.stringify({
+            RequestType: 'Delete',
+            ResourceProperties: {
+              RepositoryName: 'perplexica-app'
+            }
+          })
+        },
+      },
+      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
+        resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
+      }),
+    });
+
+    const searxngRepoResource = new cr.AwsCustomResource(this, 'SearxngRepoResource', {
+      onCreate: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: ecrManagerFunction.functionName,
+          Payload: JSON.stringify({
+            RequestType: 'Create',
+            ResourceProperties: {
+              RepositoryName: 'searxng-custom'
+            }
+          })
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('searxng-custom'),
+      },
+      onUpdate: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: ecrManagerFunction.functionName,
+          Payload: JSON.stringify({
+            RequestType: 'Update',
+            ResourceProperties: {
+              RepositoryName: 'searxng-custom'
+            }
+          })
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('searxng-custom'),
+      },
+      onDelete: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: ecrManagerFunction.functionName,
+          Payload: JSON.stringify({
+            RequestType: 'Delete',
+            ResourceProperties: {
+              RepositoryName: 'searxng-custom'
+            }
+          })
+        },
+      },
+      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
+        resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
+      }),
+    });
+
+    // Create repository interfaces from the custom resources
+    const perplexicaRepo = ecr.Repository.fromRepositoryAttributes(this, 'PerplexicaRepo', {
+      repositoryName: 'perplexica-app',
+      repositoryArn: `arn:aws:ecr:${this.region}:${this.account}:repository/perplexica-app`,
+    });
+
+    const searxngRepo = ecr.Repository.fromRepositoryAttributes(this, 'SearxngRepo', {
+      repositoryName: 'searxng-custom',
+      repositoryArn: `arn:aws:ecr:${this.region}:${this.account}:repository/searxng-custom`,
+    });
+
+    // Ensure the custom resources are created before the repositories are used
+    perplexicaRepo.node.addDependency(perplexicaRepoResource);
+    searxngRepo.node.addDependency(searxngRepoResource);
+
+    return { perplexicaRepo, searxngRepo };
+  }
+
   private createPerplexicaBuildProject(
-    ecrRepo: ecr.Repository,
+    ecrRepo: ecr.IRepository,
     artifactsBucket: s3.Bucket
   ): codebuild.Project {
     const buildRole = new iam.Role(this, 'PerplexicaBuildRole', {
@@ -285,7 +488,7 @@ export class PerplexicaStack extends cdk.Stack {
   }
 
   private createSearxngBuildProject(
-    ecrRepo: ecr.Repository,
+    ecrRepo: ecr.IRepository,
     artifactsBucket: s3.Bucket
   ): codebuild.Project {
     const buildRole = new iam.Role(this, 'SearxngBuildRole', {
