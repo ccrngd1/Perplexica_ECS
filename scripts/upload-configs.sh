@@ -7,7 +7,7 @@ set -e
 # Get the S3 bucket name from CDK output
 BUCKET_NAME=$(aws cloudformation describe-stacks \
   --stack-name PerplexicaStack \
-  --query 'Stacks[0].Outputs[?OutputKey==`ArtifactsBucket`].OutputValue' \
+  --query 'Stacks[0].Outputs[?OutputKey==`ArtifactsBucketName`].OutputValue' \
   --output text)
 
 if [ -z "$BUCKET_NAME" ]; then

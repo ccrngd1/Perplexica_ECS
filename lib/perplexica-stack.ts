@@ -30,12 +30,13 @@ export class PerplexicaStack extends cdk.Stack {
     });
 
     // ECR Repositories - Create or use existing with custom resource
-    const { perplexicaRepo, searxngRepo } = this.createEcrRepositoriesWithFallback();
+    const { perplexicaRepo, searxngRepo, litellmRepo } = this.createEcrRepositoriesWithFallback();
 
     // S3 Bucket for artifacts
     const artifactsBucket = new s3.Bucket(this, 'ArtifactsBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
+      versioned: true,
     });
 
     // Application Load Balancers - Separate ALBs for each service
@@ -49,6 +50,12 @@ export class PerplexicaStack extends cdk.Stack {
       vpc,
       internetFacing: true,
       loadBalancerName: 'searxng-alb',
+    });
+
+    const litellmALB = new elbv2.ApplicationLoadBalancer(this, 'LitellmALB', {
+      vpc,
+      internetFacing: true,
+      loadBalancerName: 'litellm-alb',
     });
 
     // Target Groups
@@ -86,6 +93,23 @@ export class PerplexicaStack extends cdk.Stack {
       },
     });
 
+    const litellmTargetGroup = new elbv2.ApplicationTargetGroup(this, 'LitellmTargetGroup', {
+      port: 4000,
+      vpc,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.IP,
+      healthCheck: {
+        path: '/health',
+        healthyHttpCodes: '200',
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(10),
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 5,
+        port: '4000',
+        protocol: elbv2.Protocol.HTTP,
+      },
+    });
+
     // ALB Listeners - Each ALB gets its own listener
     perplexicaALB.addListener('PerplexicaListener', {
       port: 80,
@@ -97,6 +121,11 @@ export class PerplexicaStack extends cdk.Stack {
       defaultTargetGroups: [searxngTargetGroup],
     });
 
+    litellmALB.addListener('LitellmListener', {
+      port: 80,
+      defaultTargetGroups: [litellmTargetGroup],
+    });
+
     // ECS Task Definitions
     const perplexicaTaskDef = new ecs.FargateTaskDefinition(this, 'PerplexicaTaskDef', {
       memoryLimitMiB: 2048,
@@ -104,6 +133,11 @@ export class PerplexicaStack extends cdk.Stack {
     });
 
     const searxngTaskDef = new ecs.FargateTaskDefinition(this, 'SearxngTaskDef', {
+      memoryLimitMiB: 1024,
+      cpu: 512,
+    });
+
+    const litellmTaskDef = new ecs.FargateTaskDefinition(this, 'LitellmTaskDef', {
       memoryLimitMiB: 1024,
       cpu: 512,
     });
@@ -147,6 +181,27 @@ export class PerplexicaStack extends cdk.Stack {
       protocol: ecs.Protocol.TCP,
     });
 
+    const litellmContainer = litellmTaskDef.addContainer('litellm', {
+      image: ecs.ContainerImage.fromRegistry('nginx:latest'), // Placeholder
+      logging: ecs.LogDrivers.awsLogs({
+        streamPrefix: 'litellm',
+        logRetention: logs.RetentionDays.ONE_WEEK,
+      }),
+      environment: {
+        PORT: '4000',
+        LITELLM_LOG: 'INFO',
+      },
+      command: [
+        'sh', '-c',
+        'echo "server { listen 4000; location / { return 200 \\"LiteLLM placeholder - waiting for deployment\\"; add_header Content-Type text/plain; } }" > /etc/nginx/conf.d/default.conf && nginx -g "daemon off;"'
+      ],
+    });
+
+    litellmContainer.addPortMappings({
+      containerPort: 4000,
+      protocol: ecs.Protocol.TCP,
+    });
+
     // ECS Services
     const perplexicaService = new ecs.FargateService(this, 'PerplexicaService', {
       cluster,
@@ -164,9 +219,18 @@ export class PerplexicaStack extends cdk.Stack {
       healthCheckGracePeriod: cdk.Duration.seconds(300), // 5 minutes grace period
     });
 
+    const litellmService = new ecs.FargateService(this, 'LitellmService', {
+      cluster,
+      taskDefinition: litellmTaskDef,
+      desiredCount: 1,
+      assignPublicIp: false,
+      healthCheckGracePeriod: cdk.Duration.seconds(300), // 5 minutes grace period
+    });
+
     // Attach services to target groups
     perplexicaService.attachToApplicationTargetGroup(perplexicaTargetGroup);
     searxngService.attachToApplicationTargetGroup(searxngTargetGroup);
+    litellmService.attachToApplicationTargetGroup(litellmTargetGroup);
 
     // CodeBuild Projects
     const perplexicaBuildProject = this.createPerplexicaBuildProject(
@@ -176,6 +240,11 @@ export class PerplexicaStack extends cdk.Stack {
 
     const searxngBuildProject = this.createSearxngBuildProject(
       searxngRepo,
+      artifactsBucket
+    );
+
+    const litellmBuildProject = this.createLitellmBuildProject(
+      litellmRepo,
       artifactsBucket
     );
 
@@ -189,6 +258,12 @@ export class PerplexicaStack extends cdk.Stack {
     this.createSearxngPipeline(
       searxngBuildProject,
       searxngService,
+      artifactsBucket
+    );
+
+    this.createLitellmPipeline(
+      litellmBuildProject,
+      litellmService,
       artifactsBucket
     );
 
@@ -212,9 +287,25 @@ export class PerplexicaStack extends cdk.Stack {
       value: searxngRepo.repositoryUri,
       description: 'SearXNG ECR Repository URI',
     });
+
+    new cdk.CfnOutput(this, 'LitellmLoadBalancerDNS', {
+      value: litellmALB.loadBalancerDnsName,
+      description: 'LiteLLM Load Balancer DNS Name',
+    });
+
+    new cdk.CfnOutput(this, 'LitellmRepoUri', {
+      value: litellmRepo.repositoryUri,
+      description: 'LiteLLM ECR Repository URI',
+    });
+
+    new cdk.CfnOutput(this, 'ArtifactsBucketName', {
+      exportName: 'ArtifactsBucket',
+      value: artifactsBucket.bucketName,
+      description: 'S3 Bucket for storing build artifacts',
+    });
   }
 
-  private createEcrRepositoriesWithFallback(): { perplexicaRepo: ecr.IRepository; searxngRepo: ecr.IRepository } {
+  private createEcrRepositoriesWithFallback(): { perplexicaRepo: ecr.IRepository; searxngRepo: ecr.IRepository; litellmRepo: ecr.IRepository } {
     // Create a custom resource that handles ECR repository creation with fallback
     const ecrManagerFunction = new lambda.Function(this, 'EcrManagerFunction', {
       runtime: lambda.Runtime.PYTHON_3_9,
@@ -417,6 +508,57 @@ def handler(event, context):
       ]),
     });
 
+    const litellmRepoResource = new cr.AwsCustomResource(this, 'LitellmRepoResource', {
+      onCreate: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: ecrManagerFunction.functionName,
+          Payload: JSON.stringify({
+            RequestType: 'Create',
+            ResourceProperties: {
+              RepositoryName: 'litellm-proxy'
+            }
+          })
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('litellm-proxy'),
+      },
+      onUpdate: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: ecrManagerFunction.functionName,
+          Payload: JSON.stringify({
+            RequestType: 'Update',
+            ResourceProperties: {
+              RepositoryName: 'litellm-proxy'
+            }
+          })
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('litellm-proxy'),
+      },
+      onDelete: {
+        service: 'Lambda',
+        action: 'invoke',
+        parameters: {
+          FunctionName: ecrManagerFunction.functionName,
+          Payload: JSON.stringify({
+            RequestType: 'Delete',
+            ResourceProperties: {
+              RepositoryName: 'litellm-proxy'
+            }
+          })
+        },
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ['lambda:InvokeFunction'],
+          resources: [ecrManagerFunction.functionArn],
+        }),
+      ]),
+    });
+
     // Create repository interfaces from the custom resources
     const perplexicaRepo = ecr.Repository.fromRepositoryAttributes(this, 'PerplexicaRepo', {
       repositoryName: 'perplexica-app',
@@ -428,11 +570,17 @@ def handler(event, context):
       repositoryArn: `arn:aws:ecr:${this.region}:${this.account}:repository/searxng-custom`,
     });
 
+    const litellmRepo = ecr.Repository.fromRepositoryAttributes(this, 'LitellmRepo', {
+      repositoryName: 'litellm-proxy',
+      repositoryArn: `arn:aws:ecr:${this.region}:${this.account}:repository/litellm-proxy`,
+    });
+
     // Ensure the custom resources are created before the repositories are used
     perplexicaRepo.node.addDependency(perplexicaRepoResource);
     searxngRepo.node.addDependency(searxngRepoResource);
+    litellmRepo.node.addDependency(litellmRepoResource);
 
-    return { perplexicaRepo, searxngRepo };
+    return { perplexicaRepo, searxngRepo, litellmRepo };
   }
 
   private createPerplexicaBuildProject(
@@ -468,10 +616,14 @@ def handler(event, context):
               'echo Logging in to Amazon ECR...',
               'aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com',
               'echo Cloning Perplexica repository...',
-              'git clone https://github.com/ItzCrazyKns/Perplexica.git .',
+              'rm -rf perplexica-repo',
+              'git clone https://github.com/ItzCrazyKns/Perplexica.git perplexica-repo',
+              'echo Copying Perplexica files to build directory...',
+              'cp -r perplexica-repo/* .',
+              'cp -r perplexica-repo/.* . 2>/dev/null || true',
               'echo Replacing config files...',
-              'cp ../config/perplexica-config.toml ./config.toml',
-              'cp ../config/perplexica.dockerfile ./app.dockerfile',
+              'cp config/perplexica-config.toml ./config.toml',
+              'cp config/perplexica.dockerfile ./app.dockerfile',
               'echo Getting SearXNG ALB DNS...',
               'SEARXNG_DNS=$(aws cloudformation describe-stacks --stack-name PerplexicaStack --query "Stacks[0].Outputs[?OutputKey==\`SearxngLoadBalancerDNS\`].OutputValue" --output text)',
               'echo Updating config with SearXNG DNS: $SEARXNG_DNS',
@@ -678,6 +830,141 @@ def handler(event, context):
               actionName: 'Source',
               bucket: artifactsBucket,
               bucketKey: 'searxng-config.zip',
+              output: sourceOutput,
+            }),
+          ],
+        },
+        {
+          stageName: 'Build',
+          actions: [
+            new codepipelineActions.CodeBuildAction({
+              actionName: 'Build',
+              project: buildProject,
+              input: sourceOutput,
+              outputs: [buildOutput],
+            }),
+          ],
+        },
+        {
+          stageName: 'Deploy',
+          actions: [
+            new codepipelineActions.EcsDeployAction({
+              actionName: 'Deploy',
+              service: ecsService,
+              input: buildOutput,
+            }),
+          ],
+        },
+      ],
+    });
+  }
+
+  private createLitellmBuildProject(
+    ecrRepo: ecr.IRepository,
+    artifactsBucket: s3.Bucket
+  ): codebuild.Project {
+    const buildRole = new iam.Role(this, 'LitellmBuildRole', {
+      assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonEC2ContainerRegistryPowerUser'),
+      ],
+    });
+
+    artifactsBucket.grantReadWrite(buildRole);
+
+    return new codebuild.Project(this, 'LitellmBuildProject', {
+      role: buildRole,
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+        privileged: true,
+      },
+      environmentVariables: {
+        AWS_DEFAULT_REGION: { value: this.region },
+        AWS_ACCOUNT_ID: { value: this.account },
+        IMAGE_REPO_NAME: { value: ecrRepo.repositoryName },
+        IMAGE_URI: { value: ecrRepo.repositoryUri },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          pre_build: {
+            commands: [
+              'echo Logging in to Amazon ECR...',
+              'aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com',
+            ],
+          },
+          build: {
+            commands: [
+              'echo Build started on `date`',
+              'echo Creating LiteLLM Dockerfile...',
+              'echo "FROM litellm/litellm:latest" > Dockerfile',
+              'echo "WORKDIR /app" >> Dockerfile',
+              'echo "COPY config/litellm-config.yaml /app/config.yaml" >> Dockerfile',
+              'echo "EXPOSE 4000" >> Dockerfile',
+              'echo "CMD [\\"litellm\\", \\"--config\\", \\"/app/config.yaml\\", \\"--port\\", \\"4000\\", \\"--num_workers\\", \\"1\\"]" >> Dockerfile',
+              'echo "Generated Dockerfile:"',
+              'cat Dockerfile',
+              'echo Building the Docker image...',
+              'docker build -t $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION .',
+              'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:latest',
+              'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
+            ],
+          },
+          post_build: {
+            commands: [
+              'echo Build completed on `date`',
+              'echo Pushing the Docker images...',
+              'docker push $IMAGE_URI:latest',
+              'docker push $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
+              'echo Writing image definitions file...',
+              'printf \'[{"name":"litellm","imageUri":"%s"}]\' $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION > imagedefinitions.json',
+            ],
+          },
+        },
+        artifacts: {
+          files: ['imagedefinitions.json'],
+        },
+      }),
+    });
+  }
+
+  private createLitellmPipeline(
+    buildProject: codebuild.Project,
+    ecsService: ecs.FargateService,
+    artifactsBucket: s3.Bucket
+  ): codepipeline.Pipeline {
+    const sourceOutput = new codepipeline.Artifact();
+    const buildOutput = new codepipeline.Artifact();
+
+    const pipelineRole = new iam.Role(this, 'LitellmPipelineRole', {
+      assumedBy: new iam.ServicePrincipal('codepipeline.amazonaws.com'),
+    });
+
+    artifactsBucket.grantReadWrite(pipelineRole);
+
+    pipelineRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'ecs:UpdateService',
+        'ecs:DescribeServices',
+        'ecs:DescribeTaskDefinition',
+        'ecs:RegisterTaskDefinition',
+        'iam:PassRole',
+      ],
+      resources: ['*'],
+    }));
+
+    return new codepipeline.Pipeline(this, 'LitellmPipeline', {
+      role: pipelineRole,
+      artifactBucket: artifactsBucket,
+      stages: [
+        {
+          stageName: 'Source',
+          actions: [
+            new codepipelineActions.S3SourceAction({
+              actionName: 'Source',
+              bucket: artifactsBucket,
+              bucketKey: 'litellm-config.zip',
               output: sourceOutput,
             }),
           ],
