@@ -20,6 +20,7 @@ echo "Using S3 bucket: $BUCKET_NAME"
 # Create temporary directories
 mkdir -p temp/perplexica-config
 mkdir -p temp/searxng-config
+mkdir -p temp/litellm-config
 
 # Copy Perplexica config files
 cp config/perplexica-config.toml temp/perplexica-config/
@@ -31,6 +32,10 @@ cp config/searxng-settings.yml temp/searxng-config/config/
 cp config/searxng-limiter.toml temp/searxng-config/config/
 cp config/searxng-uwsgi.ini temp/searxng-config/config/
 
+# Copy LiteLLM config files
+mkdir -p temp/litellm-config/config
+cp config/litellm-config.yaml temp/litellm-config/config/
+
 # Create zip files
 cd temp/perplexica-config
 zip -r ../config.zip .
@@ -40,6 +45,10 @@ cd temp/searxng-config
 zip -r ../searxng-config.zip .
 cd ../..
 
+cd temp/litellm-config
+zip -r ../litellm-config.zip .
+cd ../..
+
 # Upload to S3
 echo "Uploading Perplexica config..."
 aws s3 cp temp/config.zip s3://$BUCKET_NAME/config.zip
@@ -47,8 +56,15 @@ aws s3 cp temp/config.zip s3://$BUCKET_NAME/config.zip
 echo "Uploading SearXNG config..."
 aws s3 cp temp/searxng-config.zip s3://$BUCKET_NAME/searxng-config.zip
 
+echo "Uploading LiteLLM config..."
+aws s3 cp temp/litellm-config.zip s3://$BUCKET_NAME/litellm-config.zip
+
 # Clean up
 rm -rf temp/
 
-echo "Configuration files uploaded successfully!"
-echo "You can now trigger the pipelines to build and deploy the applications."
+echo "All configuration files uploaded successfully!"
+echo "- Perplexica config uploaded"
+echo "- SearXNG config uploaded" 
+echo "- LiteLLM config uploaded"
+echo ""
+echo "You can now trigger the pipelines to build and deploy all applications."
