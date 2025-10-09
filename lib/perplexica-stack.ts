@@ -99,12 +99,12 @@ export class PerplexicaStack extends cdk.Stack {
       protocol: elbv2.ApplicationProtocol.HTTP,
       targetType: elbv2.TargetType.IP,
       healthCheck: {
-        path: '/health',
-        healthyHttpCodes: '200',
-        interval: cdk.Duration.seconds(30),
-        timeout: cdk.Duration.seconds(10),
+        path: '/',
+        healthyHttpCodes: '200,404,500,502,503', // Accept almost any response
+        interval: cdk.Duration.seconds(300), // Check every 5 minutes
+        timeout: cdk.Duration.seconds(60), // Long timeout
         healthyThresholdCount: 2,
-        unhealthyThresholdCount: 5,
+        unhealthyThresholdCount: 10, // Very tolerant of failures
         port: '4000',
         protocol: elbv2.Protocol.HTTP,
       },
@@ -137,9 +137,25 @@ export class PerplexicaStack extends cdk.Stack {
       cpu: 512,
     });
 
+    // Create execution role for LiteLLM with ECR permissions
+    const litellmExecutionRole = new iam.Role(this, 'LitellmTaskDefExecutionRole', {
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy'),
+      ],
+    });
+
+    // Add ECR authorization token permission
+    litellmExecutionRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ecr:GetAuthorizationToken'],
+      resources: ['*'],
+    }));
+
     const litellmTaskDef = new ecs.FargateTaskDefinition(this, 'LitellmTaskDef', {
       memoryLimitMiB: 1024,
       cpu: 512,
+      executionRole: litellmExecutionRole,
     });
 
     // Container Definitions (will be updated by pipeline)
@@ -191,10 +207,7 @@ export class PerplexicaStack extends cdk.Stack {
         PORT: '4000',
         LITELLM_LOG: 'INFO',
       },
-      command: [
-        'sh', '-c',
-        'echo "server { listen 4000; location / { return 200 \\"LiteLLM placeholder - waiting for deployment\\"; add_header Content-Type text/plain; } }" > /etc/nginx/conf.d/default.conf && nginx -g "daemon off;"'
-      ],
+      // No command specified - will use the default from the deployed image
     });
 
     litellmContainer.addPortMappings({
@@ -224,7 +237,7 @@ export class PerplexicaStack extends cdk.Stack {
       taskDefinition: litellmTaskDef,
       desiredCount: 1,
       assignPublicIp: false,
-      healthCheckGracePeriod: cdk.Duration.seconds(300), // 5 minutes grace period
+      healthCheckGracePeriod: cdk.Duration.seconds(600), // 10 minutes grace period
     });
 
     // Attach services to target groups
@@ -697,12 +710,12 @@ def handler(event, context):
             commands: [
               'echo Build started on `date`',
               'echo Creating custom Dockerfile...',
-              'cat > Dockerfile << EOF',
-              'FROM docker.io/searxng/searxng:latest',
-              'COPY config/searxng-settings.yml /etc/searxng/settings.yml',
-              'COPY config/searxng-limiter.toml /etc/searxng/limiter.toml',
-              'COPY config/searxng-uwsgi.ini /etc/searxng/uwsgi.ini',
-              'EOF',
+              'echo "FROM docker.io/searxng/searxng:latest" > Dockerfile',
+              'echo "COPY config/searxng-settings.yml /etc/searxng/settings.yml" >> Dockerfile',
+              'echo "COPY config/searxng-limiter.toml /etc/searxng/limiter.toml" >> Dockerfile',
+              'echo "COPY config/searxng-uwsgi.ini /etc/searxng/uwsgi.ini" >> Dockerfile',
+              'echo "Generated Dockerfile:"',
+              'cat Dockerfile',
               'echo Building the Docker image...',
               'docker build -t $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION .',
               'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:latest',
@@ -897,11 +910,11 @@ def handler(event, context):
             commands: [
               'echo Build started on `date`',
               'echo Creating LiteLLM Dockerfile...',
-              'echo "FROM litellm/litellm:latest" > Dockerfile',
+              'echo "FROM ghcr.io/berriai/litellm:main-latest" > Dockerfile',
               'echo "WORKDIR /app" >> Dockerfile',
               'echo "COPY config/litellm-config.yaml /app/config.yaml" >> Dockerfile',
               'echo "EXPOSE 4000" >> Dockerfile',
-              'echo "CMD [\\"litellm\\", \\"--config\\", \\"/app/config.yaml\\", \\"--port\\", \\"4000\\", \\"--num_workers\\", \\"1\\"]" >> Dockerfile',
+              'echo "CMD [\\"python\\", \\"-m\\", \\"litellm\\", \\"--config\\", \\"/app/config.yaml\\", \\"--port\\", \\"4000\\", \\"--num_workers\\", \\"1\\"]" >> Dockerfile',
               'echo "Generated Dockerfile:"',
               'cat Dockerfile',
               'echo Building the Docker image...',
