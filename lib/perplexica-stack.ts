@@ -100,7 +100,7 @@ export class PerplexicaStack extends cdk.Stack {
       targetType: elbv2.TargetType.IP,
       healthCheck: {
         path: '/',
-        healthyHttpCodes: '200,404,500,502,503', // Accept almost any response
+        healthyHttpCodes: '200,404', // Accept almost any response
         interval: cdk.Duration.seconds(300), // Check every 5 minutes
         timeout: cdk.Duration.seconds(60), // Long timeout
         healthyThresholdCount: 2,
@@ -152,10 +152,26 @@ export class PerplexicaStack extends cdk.Stack {
       resources: ['*'],
     }));
 
+    // Create task role for LiteLLM with Bedrock permissions
+    const litellmTaskRole = new iam.Role(this, 'LitellmTaskRole', {
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+    });
+
+    // Add Bedrock permissions for LiteLLM
+    litellmTaskRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+      ],
+      resources: ['*'],
+    }));
+
     const litellmTaskDef = new ecs.FargateTaskDefinition(this, 'LitellmTaskDef', {
       memoryLimitMiB: 1024,
       cpu: 512,
       executionRole: litellmExecutionRole,
+      taskRole: litellmTaskRole,
     });
 
     // Container Definitions (will be updated by pipeline)
@@ -198,7 +214,7 @@ export class PerplexicaStack extends cdk.Stack {
     });
 
     const litellmContainer = litellmTaskDef.addContainer('litellm', {
-      image: ecs.ContainerImage.fromRegistry('nginx:latest'), // Placeholder
+      image: ecs.ContainerImage.fromRegistry('ghcr.io/berriai/litellm:main-latest'),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'litellm',
         logRetention: logs.RetentionDays.ONE_WEEK,
@@ -206,8 +222,31 @@ export class PerplexicaStack extends cdk.Stack {
       environment: {
         PORT: '4000',
         LITELLM_LOG: 'INFO',
+        // Embed the config as an environment variable
+        LITELLM_CONFIG: `model_list:
+  - model_name: gpt-4o
+    litellm_params:
+      model: bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0
+      aws_region_name: us-east-1
+  - model_name: text-embedding-3-large
+    litellm_params:
+      model: amazon.titan-embed-text-v1
+      aws_region_name: us-east-1
+
+litellm_settings:
+  set_verbose: false
+  drop_params: true
+  modify_params: true
+  cache: false
+  allowed_origins: ["*"]
+
+general_settings:
+  completion_model: gpt-4o`,
       },
-      // No command specified - will use the default from the deployed image
+      command: [
+        '--port', '4000'
+      ],
+      // Health check disabled - ECS will only check if the container is running
     });
 
     litellmContainer.addPortMappings({
@@ -609,6 +648,20 @@ def handler(event, context):
 
     artifactsBucket.grantReadWrite(buildRole);
 
+    // Add CloudFormation permissions to read stack outputs
+    buildRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'cloudformation:DescribeStacks',
+      ],
+      resources: [
+        `arn:aws:cloudformation:${this.region}:${this.account}:stack/${this.stackName}/*`,
+        `arn:aws:cloudformation:${this.region}:${this.account}:stack/PerplexicaStack/*`,
+      ],
+    }));
+
+
+
     return new codebuild.Project(this, 'PerplexicaBuildProject', {
       role: buildRole,
       environment: {
@@ -634,32 +687,48 @@ def handler(event, context):
               'echo Copying Perplexica files to build directory...',
               'cp -r perplexica-repo/* .',
               'cp -r perplexica-repo/.* . 2>/dev/null || true',
-              'echo Replacing config files...',
+              'echo Copying config files from source artifact...',
               'cp config/perplexica-config.toml ./config.toml',
               'cp config/perplexica.dockerfile ./app.dockerfile',
-              'echo Getting SearXNG ALB DNS...',
+              'echo Getting ALB DNS names from CloudFormation...',
               'SEARXNG_DNS=$(aws cloudformation describe-stacks --stack-name PerplexicaStack --query "Stacks[0].Outputs[?OutputKey==\`SearxngLoadBalancerDNS\`].OutputValue" --output text)',
-              'echo Updating config with SearXNG DNS: $SEARXNG_DNS',
+              'LITELLM_DNS=$(aws cloudformation describe-stacks --stack-name PerplexicaStack --query "Stacks[0].Outputs[?OutputKey==\`LitellmLoadBalancerDNS\`].OutputValue" --output text)',
+              'echo "SearXNG ALB DNS: $SEARXNG_DNS"',
+              'echo "LiteLLM ALB DNS: $LITELLM_DNS"',
+              'if [ -z "$SEARXNG_DNS" ]; then echo "Error: Could not get SearXNG ALB DNS"; exit 1; fi',
+              'if [ -z "$LITELLM_DNS" ]; then echo "Error: Could not get LiteLLM ALB DNS"; exit 1; fi',
+              'echo Updating config with ALB DNS names...',
               'sed -i "s|SEARXNG_ALB_DNS_PLACEHOLDER|$SEARXNG_DNS|g" ./config.toml',
+              'sed -i "s|LITELLM_ALB_DNS_PLACEHOLDER|$LITELLM_DNS|g" ./config.toml',
+              'echo "Updated config.toml contents:"',
+              'cat ./config.toml',
             ],
           },
           build: {
             commands: [
               'echo Build started on `date`',
+              'echo Validating required files...',
+              'if [ ! -f "app.dockerfile" ]; then echo "Error: app.dockerfile not found"; exit 1; fi',
+              'if [ ! -f "config.toml" ]; then echo "Error: config.toml not found"; exit 1; fi',
               'echo Building the Docker image...',
               'docker build -f app.dockerfile -t $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION .',
+              'echo Tagging Docker images...',
               'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:latest',
               'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
+              'echo Docker build completed successfully',
             ],
           },
           post_build: {
             commands: [
-              'echo Build completed on `date`',
-              'echo Pushing the Docker images...',
+              'echo Post-build started on `date`',
+              'echo Pushing Docker images to ECR...',
               'docker push $IMAGE_URI:latest',
               'docker push $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
-              'echo Writing image definitions file...',
+              'echo Creating ECS image definitions file...',
               'printf \'[{"name":"perplexica","imageUri":"%s"}]\' $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION > imagedefinitions.json',
+              'echo "Generated imagedefinitions.json:"',
+              'cat imagedefinitions.json',
+              'echo Build and push completed successfully on `date`',
             ],
           },
         },
@@ -914,7 +983,7 @@ def handler(event, context):
               'echo "WORKDIR /app" >> Dockerfile',
               'echo "COPY config/litellm-config.yaml /app/config.yaml" >> Dockerfile',
               'echo "EXPOSE 4000" >> Dockerfile',
-              'echo "CMD [\\"python\\", \\"-m\\", \\"litellm\\", \\"--config\\", \\"/app/config.yaml\\", \\"--port\\", \\"4000\\", \\"--num_workers\\", \\"1\\"]" >> Dockerfile',
+              'echo "CMD [\\"litellm\\", \\"--config\\", \\"/app/config.yaml\\", \\"--port\\", \\"4000\\", \\"--num_workers\\", \\"1\\"]" >> Dockerfile',
               'echo "Generated Dockerfile:"',
               'cat Dockerfile',
               'echo Building the Docker image...',
