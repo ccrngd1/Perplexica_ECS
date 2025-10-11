@@ -784,6 +784,21 @@ def handler(event, context):
 
     artifactsBucket.grantReadWrite(buildRole);
 
+    // Add ECS permissions for custom deployment
+    buildRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'ecs:ListClusters',
+        'ecs:ListServices',
+        'ecs:DescribeServices',
+        'ecs:DescribeTaskDefinition',
+        'ecs:RegisterTaskDefinition',
+        'ecs:UpdateService',
+        'iam:PassRole',
+      ],
+      resources: ['*'],
+    }));
+
     return new codebuild.Project(this, 'SearxngBuildProject', {
       role: buildRole,
       environment: {
@@ -829,7 +844,32 @@ def handler(event, context):
               'echo Pushing the Docker images...',
               'docker push $IMAGE_URI:latest',
               'docker push $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
-              'echo Writing image definitions file...',
+              'echo Creating custom deployment script...',
+              'cat > deploy.sh << EOF',
+              '#!/bin/bash',
+              'set -e',
+              'echo "Getting current task definition..."',
+              'CLUSTER_NAME=$(aws ecs list-clusters --query "clusterArns[?contains(@, \`PerplexicaCluster\`)]" --output text | cut -d/ -f2)',
+              'SERVICE_NAME=$(aws ecs list-services --cluster $CLUSTER_NAME --query "serviceArns[?contains(@, \`SearxngService\`)]" --output text | cut -d/ -f3)',
+              'TASK_DEF_ARN=$(aws ecs describe-services --cluster $CLUSTER_NAME --services $SERVICE_NAME --query "services[0].taskDefinition" --output text)',
+              'echo "Current task definition: $TASK_DEF_ARN"',
+              'echo "Getting task definition JSON..."',
+              'aws ecs describe-task-definition --task-definition $TASK_DEF_ARN --query taskDefinition > task-def.json',
+              'echo "Updating task definition with new image and removing command..."',
+              'jq "del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) | .containerDefinitions[0].image = \\"$IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION\\" | del(.containerDefinitions[0].command)" task-def.json > new-task-def.json',
+              'echo "Registering new task definition..."',
+              'NEW_TASK_DEF_ARN=$(aws ecs register-task-definition --cli-input-json file://new-task-def.json --query taskDefinition.taskDefinitionArn --output text)',
+              'echo "New task definition: $NEW_TASK_DEF_ARN"',
+              'echo "Updating service..."',
+              'aws ecs update-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --task-definition $NEW_TASK_DEF_ARN',
+              'echo "Waiting for service to stabilize..."',
+              'aws ecs wait services-stable --cluster $CLUSTER_NAME --services $SERVICE_NAME',
+              'echo "Deployment completed successfully"',
+              'EOF',
+              'chmod +x deploy.sh',
+              'echo "Running deployment script..."',
+              './deploy.sh',
+              'echo Writing image definitions file for compatibility...',
               'printf \'[{"name":"searxng","imageUri":"%s"}]\' $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION > imagedefinitions.json',
             ],
           },
@@ -921,18 +961,6 @@ def handler(event, context):
 
     artifactsBucket.grantReadWrite(pipelineRole);
 
-    pipelineRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'ecs:UpdateService',
-        'ecs:DescribeServices',
-        'ecs:DescribeTaskDefinition',
-        'ecs:RegisterTaskDefinition',
-        'iam:PassRole',
-      ],
-      resources: ['*'],
-    }));
-
     return new codepipeline.Pipeline(this, 'SearxngPipeline', {
       role: pipelineRole,
       artifactBucket: artifactsBucket,
@@ -949,23 +977,13 @@ def handler(event, context):
           ],
         },
         {
-          stageName: 'Build',
+          stageName: 'BuildAndDeploy',
           actions: [
             new codepipelineActions.CodeBuildAction({
-              actionName: 'Build',
+              actionName: 'BuildAndDeploy',
               project: buildProject,
               input: sourceOutput,
               outputs: [buildOutput],
-            }),
-          ],
-        },
-        {
-          stageName: 'Deploy',
-          actions: [
-            new codepipelineActions.EcsDeployAction({
-              actionName: 'Deploy',
-              service: ecsService,
-              input: buildOutput,
             }),
           ],
         },
