@@ -127,14 +127,46 @@ export class PerplexicaStack extends cdk.Stack {
     });
 
     // ECS Task Definitions
+    // Create execution role for Perplexica with ECR permissions
+    const perplexicaExecutionRole = new iam.Role(this, 'PerplexicaTaskDefExecutionRole', {
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy'),
+      ],
+    });
+
+    // Add ECR authorization token permission
+    perplexicaExecutionRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ecr:GetAuthorizationToken'],
+      resources: ['*'],
+    }));
+
     const perplexicaTaskDef = new ecs.FargateTaskDefinition(this, 'PerplexicaTaskDef', {
       memoryLimitMiB: 2048,
       cpu: 1024,
+      executionRole: perplexicaExecutionRole,
     });
+
+    // Create execution role for SearXNG with ECR permissions
+    const searxngExecutionRole = new iam.Role(this, 'SearxngTaskDefExecutionRole', {
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy'),
+      ],
+    });
+
+    // Add ECR authorization token permission
+    searxngExecutionRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ecr:GetAuthorizationToken'],
+      resources: ['*'],
+    }));
 
     const searxngTaskDef = new ecs.FargateTaskDefinition(this, 'SearxngTaskDef', {
       memoryLimitMiB: 1024,
       cpu: 512,
+      executionRole: searxngExecutionRole,
     });
 
     // Create execution role for LiteLLM with ECR permissions
@@ -691,8 +723,8 @@ def handler(event, context):
               'cp config/perplexica-config.toml ./config.toml',
               'cp config/perplexica.dockerfile ./app.dockerfile',
               'echo Getting ALB DNS names from CloudFormation...',
-              'SEARXNG_DNS=$(aws cloudformation describe-stacks --stack-name PerplexicaStack --query "Stacks[0].Outputs[?OutputKey==\`SearxngLoadBalancerDNS\`].OutputValue" --output text)',
-              'LITELLM_DNS=$(aws cloudformation describe-stacks --stack-name PerplexicaStack --query "Stacks[0].Outputs[?OutputKey==\`LitellmLoadBalancerDNS\`].OutputValue" --output text)',
+              'SEARXNG_DNS=$(aws cloudformation describe-stacks --stack-name PerplexicaStack --query \'Stacks[0].Outputs[?OutputKey==\`SearxngLoadBalancerDNS\`].OutputValue\')',
+              'LITELLM_DNS=$(aws cloudformation describe-stacks --stack-name PerplexicaStack --query \'Stacks[0].Outputs[?OutputKey==\`LitellmLoadBalancerDNS\`].OutputValue\')',
               'echo "SearXNG ALB DNS: $SEARXNG_DNS"',
               'echo "LiteLLM ALB DNS: $LITELLM_DNS"',
               'if [ -z "$SEARXNG_DNS" ]; then echo "Error: Could not get SearXNG ALB DNS"; exit 1; fi',
