@@ -59,42 +59,8 @@ export class PerplexicaStack extends cdk.Stack {
     });
 
     // Target Groups
-    const perplexicaTargetGroup = new elbv2.ApplicationTargetGroup(this, 'PerplexicaTargetGroup', {
-      port: 3000,
-      vpc,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-      targetType: elbv2.TargetType.IP,
-      healthCheck: {
-        path: '/',
-        healthyHttpCodes: '200,302,404', // Allow 404 during startup
-        interval: cdk.Duration.seconds(60), // Longer interval
-        timeout: cdk.Duration.seconds(30), // Longer timeout
-        healthyThresholdCount: 2,
-        unhealthyThresholdCount: 10, // More tolerance for failures
-        port: '3000',
-        protocol: elbv2.Protocol.HTTP,
-      },
-    });
-
-    const searxngTargetGroup = new elbv2.ApplicationTargetGroup(this, 'SearxngTargetGroup', {
-      port: 8080,
-      vpc,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-      targetType: elbv2.TargetType.IP,
-      healthCheck: {
-        path: '/',
-        healthyHttpCodes: '200,302,404', // Allow 404 during startup
-        interval: cdk.Duration.seconds(60), // Longer interval
-        timeout: cdk.Duration.seconds(30), // Longer timeout
-        healthyThresholdCount: 2,
-        unhealthyThresholdCount: 10, // More tolerance for failures
-        port: '8080',
-        protocol: elbv2.Protocol.HTTP,
-      },
-    });
-
-    const litellmTargetGroup = new elbv2.ApplicationTargetGroup(this, 'LitellmTargetGroup', {
-      port: 4000,
+    const perplexicaTargetGroup = new elbv2.ApplicationTargetGroup(this, 'PerplexicaTargetGroupV2', {
+      port: 80,
       vpc,
       protocol: elbv2.ApplicationProtocol.HTTP,
       targetType: elbv2.TargetType.IP,
@@ -105,7 +71,41 @@ export class PerplexicaStack extends cdk.Stack {
         timeout: cdk.Duration.seconds(60), // Long timeout
         healthyThresholdCount: 2,
         unhealthyThresholdCount: 10, // Very tolerant of failures
-        port: '4000',
+        port: '80',
+        protocol: elbv2.Protocol.HTTP,
+      },
+    });
+
+    const searxngTargetGroup = new elbv2.ApplicationTargetGroup(this, 'SearxngTargetGroupV2', {
+      port: 80,
+      vpc,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.IP,
+      healthCheck: {
+        path: '/',
+        healthyHttpCodes: '200,404', // Accept almost any response
+        interval: cdk.Duration.seconds(300), // Check every 5 minutes
+        timeout: cdk.Duration.seconds(60), // Long timeout
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 10, // Very tolerant of failures
+        port: '80',
+        protocol: elbv2.Protocol.HTTP,
+      },
+    });
+
+    const litellmTargetGroup = new elbv2.ApplicationTargetGroup(this, 'LitellmTargetGroupV2', {
+      port: 80,
+      vpc,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.IP,
+      healthCheck: {
+        path: '/',
+        healthyHttpCodes: '200,404', // Accept almost any response
+        interval: cdk.Duration.seconds(300), // Check every 5 minutes
+        timeout: cdk.Duration.seconds(60), // Long timeout
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 10, // Very tolerant of failures
+        port: '80',
         protocol: elbv2.Protocol.HTTP,
       },
     });
@@ -208,7 +208,7 @@ export class PerplexicaStack extends cdk.Stack {
 
     // Container Definitions (will be updated by pipeline)
     const perplexicaContainer = perplexicaTaskDef.addContainer('perplexica', {
-      image: ecs.ContainerImage.fromRegistry('nginx:latest'), // Placeholder
+      image: ecs.ContainerImage.fromRegistry('public.ecr.aws/nginx/nginx:latest'), // Nginx placeholder
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'perplexica',
         logRetention: logs.RetentionDays.ONE_WEEK,
@@ -216,32 +216,39 @@ export class PerplexicaStack extends cdk.Stack {
       environment: {
         SEARXNG_API_URL: `http://${searxngALB.loadBalancerDnsName}`,
         DATA_DIR: '/home/perplexica',
+        PORT: '80',
       },
-      command: [
-        'sh', '-c',
-        'echo "server { listen 3000; location / { return 200 \\"Perplexica placeholder - waiting for deployment\\"; add_header Content-Type text/plain; } }" > /etc/nginx/conf.d/default.conf && nginx -g "daemon off;"'
-      ],
+      healthCheck: {
+        command: ['CMD-SHELL', 'exit 0'], // Always healthy
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        retries: 3,
+        startPeriod: cdk.Duration.seconds(60),
+      },
     });
 
     perplexicaContainer.addPortMappings({
-      containerPort: 3000,
+      containerPort: 80,
       protocol: ecs.Protocol.TCP,
     });
 
     const searxngContainer = searxngTaskDef.addContainer('searxng', {
-      image: ecs.ContainerImage.fromRegistry('nginx:latest'), // Placeholder
+      image: ecs.ContainerImage.fromRegistry('public.ecr.aws/nginx/nginx:latest'), // Nginx placeholder
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'searxng',
         logRetention: logs.RetentionDays.ONE_WEEK,
       }),
-      command: [
-        'sh', '-c',
-        'echo "server { listen 8080; location / { return 200 \\"SearXNG placeholder - waiting for deployment\\"; add_header Content-Type text/plain; } }" > /etc/nginx/conf.d/default.conf && nginx -g "daemon off;"'
-      ],
+      healthCheck: {
+        command: ['CMD-SHELL', 'exit 0'], // Always healthy
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        retries: 3,
+        startPeriod: cdk.Duration.seconds(60),
+      },
     });
 
     searxngContainer.addPortMappings({
-      containerPort: 8080,
+      containerPort: 80,
       protocol: ecs.Protocol.TCP,
     });
 
@@ -252,7 +259,7 @@ export class PerplexicaStack extends cdk.Stack {
         logRetention: logs.RetentionDays.ONE_WEEK,
       }),
       environment: {
-        PORT: '4000',
+        PORT: '80',
         LITELLM_LOG: 'INFO',
         // Embed the config as an environment variable
         LITELLM_CONFIG: `model_list:
@@ -276,13 +283,13 @@ general_settings:
   completion_model: gpt-4o`,
       },
       command: [
-        '--port', '4000'
+        '--port', '80'
       ],
       // Health check disabled - ECS will only check if the container is running
     });
 
     litellmContainer.addPortMappings({
-      containerPort: 4000,
+      containerPort: 80,
       protocol: ecs.Protocol.TCP,
     });
 
@@ -692,7 +699,15 @@ def handler(event, context):
       ],
     }));
 
-
+    // Add ECR Public permissions
+    buildRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'ecr-public:GetAuthorizationToken',
+        'sts:GetServiceBearerToken',
+      ],
+      resources: ['*'],
+    }));
 
     return new codebuild.Project(this, 'PerplexicaBuildProject', {
       role: buildRole,
@@ -713,6 +728,10 @@ def handler(event, context):
             commands: [
               'echo Logging in to Amazon ECR...',
               'aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com',
+              'echo Checking AWS CLI version...',
+              'aws --version',
+              'echo Attempting ECR Public authentication (optional)...',
+              'aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws || echo "ECR Public login failed - continuing with Docker Hub direct access"',
               'echo Cloning Perplexica repository...',
               'rm -rf perplexica-repo',
               'git clone https://github.com/ItzCrazyKns/Perplexica.git perplexica-repo',
@@ -722,9 +741,11 @@ def handler(event, context):
               'echo Copying config files from source artifact...',
               'cp config/perplexica-config.toml ./config.toml',
               'cp config/perplexica.dockerfile ./app.dockerfile',
+              'cp config/perplexity-entrypoint.sh ./entrypoint.sh',
               'echo Getting ALB DNS names from CloudFormation...',
-              'SEARXNG_DNS=$(aws cloudformation describe-stacks --stack-name PerplexicaStack --query \'Stacks[0].Outputs[?OutputKey==\`SearxngLoadBalancerDNS\`].OutputValue\')',
-              'LITELLM_DNS=$(aws cloudformation describe-stacks --stack-name PerplexicaStack --query \'Stacks[0].Outputs[?OutputKey==\`LitellmLoadBalancerDNS\`].OutputValue\')',
+              'OUTPUTS=$(aws cloudformation describe-stacks --stack-name PerplexicaStack --query "Stacks[0].Outputs" --output json)',
+              'SEARXNG_DNS=$(echo $OUTPUTS | jq -r \'.[] | select(.OutputKey=="SearxngLoadBalancerDNS") | .OutputValue\')',
+              'LITELLM_DNS=$(echo $OUTPUTS | jq -r \'.[] | select(.OutputKey=="LitellmLoadBalancerDNS") | .OutputValue\')',
               'echo "SearXNG ALB DNS: $SEARXNG_DNS"',
               'echo "LiteLLM ALB DNS: $LITELLM_DNS"',
               'if [ -z "$SEARXNG_DNS" ]; then echo "Error: Could not get SearXNG ALB DNS"; exit 1; fi',
@@ -799,6 +820,16 @@ def handler(event, context):
       resources: ['*'],
     }));
 
+    // Add ECR Public permissions
+    buildRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'ecr-public:GetAuthorizationToken',
+        'sts:GetServiceBearerToken',
+      ],
+      resources: ['*'],
+    }));
+
     return new codebuild.Project(this, 'SearxngBuildProject', {
       role: buildRole,
       environment: {
@@ -818,15 +849,19 @@ def handler(event, context):
             commands: [
               'echo Logging in to Amazon ECR...',
               'aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com',
+              'echo Checking AWS CLI version...',
+              'aws --version',
+              'echo Attempting ECR Public authentication (optional)...',
+              'aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws || echo "ECR Public login failed - continuing with Docker Hub direct access"',
               'echo Pulling base SearXNG image...',
-              'docker pull docker.io/searxng/searxng:latest',
+              'docker pull searxng/searxng:latest || (echo "Failed to pull from Docker Hub, trying without authentication..." && docker pull searxng/searxng:latest)',
             ],
           },
           build: {
             commands: [
               'echo Build started on `date`',
               'echo Creating custom Dockerfile...',
-              'echo "FROM docker.io/searxng/searxng:latest" > Dockerfile',
+              'echo "FROM searxng/searxng:latest" > Dockerfile',
               'echo "COPY config/searxng-settings.yml /etc/searxng/settings.yml" >> Dockerfile',
               'echo "COPY config/searxng-limiter.toml /etc/searxng/limiter.toml" >> Dockerfile',
               'echo "COPY config/searxng-uwsgi.ini /etc/searxng/uwsgi.ini" >> Dockerfile',

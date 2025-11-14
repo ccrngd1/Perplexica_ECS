@@ -26,6 +26,7 @@ mkdir -p temp/litellm-config
 mkdir -p temp/perplexica-config/config
 cp config/perplexica-config.toml temp/perplexica-config/config/
 cp config/perplexica.dockerfile temp/perplexica-config/config/
+cp config/perplexity-entrypoint.sh temp/perplexica-config/config/
 
 # Copy SearXNG config files
 mkdir -p temp/searxng-config/config

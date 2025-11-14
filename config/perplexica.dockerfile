@@ -1,4 +1,4 @@
-FROM node:20.18.0-slim AS builder
+FROM public.ecr.aws/docker/library/node:20.18.0-slim AS builder
 
 WORKDIR /home/perplexica
 
@@ -15,7 +15,7 @@ RUN yarn build
 RUN yarn add --dev @vercel/ncc
 RUN yarn ncc build ./src/lib/db/migrate.ts -o migrator
 
-FROM node:20.18.0-slim
+FROM public.ecr.aws/docker/library/node:20.18.0-slim
 
 WORKDIR /home/perplexica
 
@@ -33,6 +33,6 @@ RUN mkdir /home/perplexica/uploads
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 
-EXPOSE 3000
+EXPOSE 80
 
 CMD ["./entrypoint.sh"]
