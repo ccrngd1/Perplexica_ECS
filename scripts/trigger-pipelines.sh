@@ -1,33 +1,43 @@
 #!/bin/bash
 
-# Script to trigger all CodePipelines (Perplexica, SearXNG, and LiteLLM)
+# Script to trigger all CodePipelines using a more reliable approach
 
 set -e
 
-# Function to find and trigger pipeline by pattern
+echo "Finding pipelines..."
+
+# Get all pipelines and filter by our stack name
+ALL_PIPELINES=$(aws codepipeline list-pipelines --output json)
+
+# Extract pipeline names that start with our stack name
+PERPLEXICA_PIPELINE=$(echo "$ALL_PIPELINES" | jq -r '.pipelines[] | select(.name | startswith("PerplexicaStack-PerplexicaPipeline")) | .name')
+SEARXNG_PIPELINE=$(echo "$ALL_PIPELINES" | jq -r '.pipelines[] | select(.name | startswith("PerplexicaStack-SearxngPipeline")) | .name')
+LITELLM_PIPELINE=$(echo "$ALL_PIPELINES" | jq -r '.pipelines[] | select(.name | startswith("PerplexicaStack-LitellmPipeline")) | .name')
+
+echo "Found pipelines:"
+echo "  Perplexica: $PERPLEXICA_PIPELINE"
+echo "  SearXNG: $SEARXNG_PIPELINE"
+echo "  LiteLLM: $LITELLM_PIPELINE"
+echo ""
+
+# Function to trigger pipeline if it exists
 trigger_pipeline() {
-    local pattern=$1
-    local description=$2
+    local pipeline_name="$1"
+    local description="$2"
     
-    echo "Finding $description pipeline..."
-    local pipeline_name=$(aws codepipeline list-pipelines --query "pipelineList[?starts_with(name, '$pattern')].name" --output text)
-    
-    if [ -z "$pipeline_name" ]; then
-        echo "Warning: No pipeline found matching pattern '$pattern'"
-        return 1
+    if [ -n "$pipeline_name" ] && [ "$pipeline_name" != "null" ]; then
+        echo "Triggering $description pipeline: $pipeline_name"
+        aws codepipeline start-pipeline-execution --name "$pipeline_name"
+        echo "✓ $description pipeline triggered successfully"
+    else
+        echo "⚠ $description pipeline not found, skipping..."
     fi
-    
-    echo "Found pipeline: $pipeline_name"
-    echo "Triggering $description pipeline..."
-    aws codepipeline start-pipeline-execution --name "$pipeline_name"
-    echo "✓ $description pipeline triggered successfully"
     echo ""
 }
 
 # Trigger each pipeline
-trigger_pipeline "PerplexicaStack-PerplexicaPipeline" "Perplexica"
-trigger_pipeline "PerplexicaStack-SearxngPipeline" "SearXNG"
-trigger_pipeline "PerplexicaStack-LitellmPipeline" "LiteLLM"
+trigger_pipeline "$PERPLEXICA_PIPELINE" "Perplexica"
+trigger_pipeline "$SEARXNG_PIPELINE" "SearXNG"
+trigger_pipeline "$LITELLM_PIPELINE" "LiteLLM"
 
-echo "All pipelines have been triggered!"
-echo "You can monitor their progress in the AWS CodePipeline console."
+echo "All available pipelines have been triggered!"

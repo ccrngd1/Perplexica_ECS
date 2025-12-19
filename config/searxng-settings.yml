@@ -16,4 +16,6 @@ server:
 
 engines:
   - name: wolframalpha
-    disabled: false
+    disabled: false    
+  - name: wikidata
+    disabled: true
