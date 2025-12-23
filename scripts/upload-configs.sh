@@ -30,8 +30,8 @@ cp config/perplexity-entrypoint.sh temp/perplexica-config/config/
 
 # Copy SearXNG config files
 mkdir -p temp/searxng-config/config
-cp config/searxng-settings.yml temp/searxng-config/config/
-cp config/searxng-limiter.toml temp/searxng-config/config/
+cp config/searxng-settings.yml temp/searxng-config/config/settings.yml
+cp config/searxng-limiter.toml temp/searxng-config/config/limiter.toml
 cp config/searxng-uwsgi.ini temp/searxng-config/config/
 
 # Copy LiteLLM config files

@@ -238,6 +238,9 @@ export class PerplexicaStack extends cdk.Stack {
         streamPrefix: 'searxng',
         logRetention: logs.RetentionDays.ONE_WEEK,
       }),
+      environment: {
+        SEARXNG_PORT: '80',
+      },
       healthCheck: {
         command: ['CMD-SHELL', 'exit 0'], // Always healthy
         interval: cdk.Duration.seconds(30),
