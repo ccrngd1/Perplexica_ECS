@@ -37,6 +37,7 @@ cp config/searxng-uwsgi.ini temp/searxng-config/config/
 # Copy LiteLLM config files
 mkdir -p temp/litellm-config/config
 cp config/litellm-config.yaml temp/litellm-config/config/
+cp config/litellm.dockerfile temp/litellm-config/litellm.dockerfile
 
 # Create zip files
 cd temp/perplexica-config

@@ -28,6 +28,8 @@ COPY drizzle ./drizzle
 COPY --from=builder /home/perplexica/migrator/build ./build
 COPY --from=builder /home/perplexica/migrator/index.js ./migrate.js
 
+RUN npm i 
+
 RUN mkdir /home/perplexica/uploads
 
 COPY entrypoint.sh ./entrypoint.sh

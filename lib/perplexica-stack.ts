@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as efs from 'aws-cdk-lib/aws-efs';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
@@ -37,6 +38,30 @@ export class PerplexicaStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       versioned: true,
+    });
+
+    // EFS File System for Perplexica persistent storage
+    const perplexicaFileSystem = new efs.FileSystem(this, 'PerplexicaFileSystem', {
+      vpc,
+      lifecyclePolicy: efs.LifecyclePolicy.AFTER_14_DAYS,
+      performanceMode: efs.PerformanceMode.GENERAL_PURPOSE,
+      throughputMode: efs.ThroughputMode.BURSTING,
+      removalPolicy: cdk.RemovalPolicy.RETAIN, // Keep data even if stack is deleted
+      encrypted: true,
+    });
+
+    // Create access point for Perplexica data
+    const perplexicaAccessPoint = perplexicaFileSystem.addAccessPoint('PerplexicaAccessPoint', {
+      path: '/perplexica-data',
+      createAcl: {
+        ownerGid: '1000',
+        ownerUid: '1000',
+        permissions: '755',
+      },
+      posixUser: {
+        gid: '1000',
+        uid: '1000',
+      },
     });
 
     // Application Load Balancers - Separate ALBs for each service
@@ -148,6 +173,19 @@ export class PerplexicaStack extends cdk.Stack {
       executionRole: perplexicaExecutionRole,
     });
 
+    // Add EFS volume to Perplexica task definition
+    perplexicaTaskDef.addVolume({
+      name: 'perplexica-efs-storage',
+      efsVolumeConfiguration: {
+        fileSystemId: perplexicaFileSystem.fileSystemId,
+        transitEncryption: 'ENABLED',
+        authorizationConfig: {
+          accessPointId: perplexicaAccessPoint.accessPointId,
+          iam: 'ENABLED',
+        },
+      },
+    });
+
     // Create execution role for SearXNG with ECR permissions
     const searxngExecutionRole = new iam.Role(this, 'SearxngTaskDefExecutionRole', {
       assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
@@ -227,6 +265,13 @@ export class PerplexicaStack extends cdk.Stack {
       },
     });
 
+    // Mount EFS volume in Perplexica container
+    perplexicaContainer.addMountPoints({
+      containerPath: '/home/perplexica',
+      sourceVolume: 'perplexica-efs-storage',
+      readOnly: false,
+    });
+
     perplexicaContainer.addPortMappings({
       containerPort: 80,
       protocol: ecs.Protocol.TCP,
@@ -239,7 +284,7 @@ export class PerplexicaStack extends cdk.Stack {
         logRetention: logs.RetentionDays.ONE_WEEK,
       }),
       environment: {
-        SEARXNG_PORT: '80',
+        GRANIAN_PORT: '80',
       },
       healthCheck: {
         command: ['CMD-SHELL', 'exit 0'], // Always healthy
@@ -256,39 +301,18 @@ export class PerplexicaStack extends cdk.Stack {
     });
 
     const litellmContainer = litellmTaskDef.addContainer('litellm', {
-      image: ecs.ContainerImage.fromRegistry('ghcr.io/berriai/litellm:main-latest'),
+      image: ecs.ContainerImage.fromRegistry('public.ecr.aws/nginx/nginx:latest'), // Nginx placeholder      
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'litellm',
         logRetention: logs.RetentionDays.ONE_WEEK,
-      }),
-      environment: {
-        PORT: '80',
-        LITELLM_LOG: 'INFO',
-        // Embed the config as an environment variable
-        LITELLM_CONFIG: `model_list:
-  - model_name: gpt-4o
-    litellm_params:
-      model: bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0
-      aws_region_name: us-east-1
-  - model_name: text-embedding-3-large
-    litellm_params:
-      model: amazon.titan-embed-text-v1
-      aws_region_name: us-east-1
-
-litellm_settings:
-  set_verbose: false
-  drop_params: true
-  modify_params: true
-  cache: false
-  allowed_origins: ["*"]
-
-general_settings:
-  completion_model: gpt-4o`,
+      }), 
+      healthCheck: {
+        command: ['CMD-SHELL', 'exit 0'], // Always healthy
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        retries: 3,
+        startPeriod: cdk.Duration.seconds(60),
       },
-      command: [
-        '--port', '80'
-      ],
-      // Health check disabled - ECS will only check if the container is running
     });
 
     litellmContainer.addPortMappings({
@@ -303,6 +327,7 @@ general_settings:
       desiredCount: 1,
       assignPublicIp: false,
       healthCheckGracePeriod: cdk.Duration.seconds(300), // 5 minutes grace period
+      enableExecuteCommand: true,
     });
 
     const searxngService = new ecs.FargateService(this, 'SearxngService', {
@@ -311,6 +336,7 @@ general_settings:
       desiredCount: 1,
       assignPublicIp: false,
       healthCheckGracePeriod: cdk.Duration.seconds(300), // 5 minutes grace period
+      enableExecuteCommand: true,
     });
 
     const litellmService = new ecs.FargateService(this, 'LitellmService', {
@@ -319,12 +345,16 @@ general_settings:
       desiredCount: 1,
       assignPublicIp: false,
       healthCheckGracePeriod: cdk.Duration.seconds(600), // 10 minutes grace period
+      enableExecuteCommand: true,
     });
 
     // Attach services to target groups
     perplexicaService.attachToApplicationTargetGroup(perplexicaTargetGroup);
     searxngService.attachToApplicationTargetGroup(searxngTargetGroup);
     litellmService.attachToApplicationTargetGroup(litellmTargetGroup);
+
+    // Allow Perplexica service to access EFS
+    perplexicaFileSystem.connections.allowDefaultPortFrom(perplexicaService.connections);
 
     // CodeBuild Projects
     const perplexicaBuildProject = this.createPerplexicaBuildProject(
@@ -396,6 +426,11 @@ general_settings:
       exportName: 'ArtifactsBucket',
       value: artifactsBucket.bucketName,
       description: 'S3 Bucket for storing build artifacts',
+    });
+
+    new cdk.CfnOutput(this, 'PerplexicaFileSystemId', {
+      value: perplexicaFileSystem.fileSystemId,
+      description: 'EFS File System ID for Perplexica persistent storage',
     });
   }
 
@@ -759,33 +794,9 @@ def handler(event, context):
               'echo Copying config files from backup...',
               'echo "Checking backup directory contents:"',
               'ls -la /tmp/backup-config/ || echo "Backup directory not found"',
-              'if [ -f "/tmp/backup-config/perplexica-config.toml" ]; then',
-              '  echo "Found perplexica-config.toml, copying to config.toml"',
-              '  cp /tmp/backup-config/perplexica-config.toml ./config.toml',
-              'else',
-              '  echo "ERROR: perplexica-config.toml not found in backup"',
-              '  echo "Available files in backup:"',
-              '  ls -la /tmp/backup-config/ || echo "No backup directory"',
-              '  exit 1',
-              'fi',
-              'if [ -f "/tmp/backup-config/perplexica.dockerfile" ]; then',
-              '  echo "Found perplexica.dockerfile, copying to app.dockerfile"',
-              '  cp /tmp/backup-config/perplexica.dockerfile ./app.dockerfile',
-              'else',
-              '  echo "ERROR: perplexica.dockerfile not found in backup"',
-              '  echo "Available files in backup:"',
-              '  ls -la /tmp/backup-config/ || echo "No backup directory"',
-              '  exit 1',
-              'fi',
-              'if [ -f "/tmp/backup-config/perplexity-entrypoint.sh" ]; then',
-              '  echo "Found perplexity-entrypoint.sh, copying to entrypoint.sh"',
-              '  cp /tmp/backup-config/perplexity-entrypoint.sh ./entrypoint.sh',
-              'else',
-              '  echo "ERROR: perplexity-entrypoint.sh not found in backup"',
-              '  echo "Available files in backup:"',
-              '  ls -la /tmp/backup-config/ || echo "No backup directory"',
-              '  exit 1',
-              'fi',
+              'if [ -f "/tmp/backup-config/perplexica-config.toml" ]; then echo "Found perplexica-config.toml, copying to config.toml"; cp /tmp/backup-config/perplexica-config.toml ./config.toml; else echo "ERROR: perplexica-config.toml not found in backup"; echo "Available files in backup:"; ls -la /tmp/backup-config/ || echo "No backup directory"; exit 1; fi',
+              'if [ -f "/tmp/backup-config/perplexica.dockerfile" ]; then echo "Found perplexica.dockerfile, copying to app.dockerfile"; cp /tmp/backup-config/perplexica.dockerfile ./app.dockerfile; else echo "ERROR: perplexica.dockerfile not found in backup";  echo "Available files in backup:"; ls -la /tmp/backup-config/ || echo "No backup directory"; exit 1; fi',
+              'if [ -f "/tmp/backup-config/perplexity-entrypoint.sh" ]; then echo "Found perplexity-entrypoint.sh, copying to entrypoint.sh"; cp /tmp/backup-config/perplexity-entrypoint.sh ./entrypoint.sh; else echo "ERROR: perplexity-entrypoint.sh not found in backup";  echo "Available files in backup:"; ls -la /tmp/backup-config/ || echo "No backup directory"; exit 1; fi',
               'echo "Files after copying config:"',
               'ls -la',
               'echo Getting ALB DNS names from CloudFormation...',
@@ -801,6 +812,7 @@ def handler(event, context):
               'sed -i "s|LITELLM_ALB_DNS_PLACEHOLDER|$LITELLM_DNS|g" ./config.toml',
               'echo "Updated config.toml contents:"',
               'cat ./config.toml',
+
             ],
           },
           build: {
@@ -904,7 +916,8 @@ def handler(event, context):
               'echo "FROM searxng/searxng:latest" > Dockerfile',
               'echo "COPY config/settings.yml /etc/searxng/settings.yml" >> Dockerfile',
               'echo "COPY config/limiter.toml /etc/searxng/limiter.toml" >> Dockerfile',
-              'echo "COPY config/searxng-uwsgi.ini /etc/searxng/uwsgi.ini" >> Dockerfile',
+              'echo "COPY config/searxng-uwsgi.ini /usr/local/searxng/searx/uwsgi.ini" >> Dockerfile',
+              'echo "ENTRYPOINT [\\\"/usr/local/searxng/entrypoint.sh\\\"]" >> Dockerfile',
               'echo "Generated Dockerfile:"',
               'cat Dockerfile',
               'echo Building the Docker image...',
@@ -913,6 +926,8 @@ def handler(event, context):
               'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
             ],
           },
+          //'echo "COPY config/settings.yml /usr/local/searxng/searx/settings.yml" >> Dockerfile',
+          //'echo "COPY config/limiter.toml /usr/local/searxng/searx/limiter.toml" >> Dockerfile',
           post_build: {
             commands: [
               'echo Build completed on `date`',
@@ -1091,16 +1106,13 @@ def handler(event, context):
           build: {
             commands: [
               'echo Build started on `date`',
-              'echo Creating LiteLLM Dockerfile...',
-              'echo "FROM ghcr.io/berriai/litellm:main-latest" > Dockerfile',
-              'echo "WORKDIR /app" >> Dockerfile',
-              'echo "COPY config/litellm-config.yaml /app/config.yaml" >> Dockerfile',
-              'echo "EXPOSE 4000" >> Dockerfile',
-              'echo "CMD [\\"litellm\\", \\"--config\\", \\"/app/config.yaml\\", \\"--port\\", \\"4000\\", \\"--num_workers\\", \\"1\\"]" >> Dockerfile',
-              'echo "Generated Dockerfile:"',
-              'cat Dockerfile',
+              'echo Validating required files...',
+              'if [ ! -f "litellm.dockerfile" ]; then echo "Error: litellm.dockerfile not found"; exit 1; fi',
+              'if [ ! -f "config/litellm-config.yaml" ]; then echo "Error: config/litellm-config.yaml not found"; exit 1; fi',
+              'echo "Contents of litellm.dockerfile:"',
+              'cat litellm.dockerfile',
               'echo Building the Docker image...',
-              'docker build -t $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION .',
+              'docker build -f litellm.dockerfile -t $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION .',
               'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:latest',
               'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
             ],
