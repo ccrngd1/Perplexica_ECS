@@ -40,29 +40,37 @@ export class PerplexicaStack extends cdk.Stack {
       versioned: true,
     });
 
-    // EFS File System for Perplexica persistent storage
-    const perplexicaFileSystem = new efs.FileSystem(this, 'PerplexicaFileSystem', {
-      vpc,
-      lifecyclePolicy: efs.LifecyclePolicy.AFTER_14_DAYS,
-      performanceMode: efs.PerformanceMode.GENERAL_PURPOSE,
-      throughputMode: efs.ThroughputMode.BURSTING,
-      removalPolicy: cdk.RemovalPolicy.RETAIN, // Keep data even if stack is deleted
-      encrypted: true,
-    });
+    // EFS File System for Perplexica persistent storage - TEMPORARILY DISABLED
+    // const perplexicaFileSystem = new efs.FileSystem(this, 'PerplexicaFileSystem', {
+    //   vpc,
+    //   lifecyclePolicy: efs.LifecyclePolicy.AFTER_14_DAYS,
+    //   performanceMode: efs.PerformanceMode.GENERAL_PURPOSE,
+    //   throughputMode: efs.ThroughputMode.BURSTING,
+    //   removalPolicy: cdk.RemovalPolicy.RETAIN, // Keep data even if stack is deleted
+    //   encrypted: true,
+    //   vpcSubnets: {
+    //     subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+    //   },
+    //   securityGroup: new ec2.SecurityGroup(this, 'EfsSecurityGroup', {
+    //     vpc,
+    //     description: 'Security group for EFS mount targets',
+    //     allowAllOutbound: true,
+    //   }),
+    // });
 
-    // Create access point for Perplexica data
-    const perplexicaAccessPoint = perplexicaFileSystem.addAccessPoint('PerplexicaAccessPoint', {
-      path: '/perplexica-data',
-      createAcl: {
-        ownerGid: '1000',
-        ownerUid: '1000',
-        permissions: '755',
-      },
-      posixUser: {
-        gid: '1000',
-        uid: '1000',
-      },
-    });
+    // // Create access point for Perplexica data
+    // const perplexicaAccessPoint = perplexicaFileSystem.addAccessPoint('PerplexicaAccessPoint', {
+    //   path: '/perplexica-data',
+    //   createAcl: {
+    //     ownerGid: '1000',
+    //     ownerUid: '1000',
+    //     permissions: '755',
+    //   },
+    //   posixUser: {
+    //     gid: '1000',
+    //     uid: '1000',
+    //   },
+    // });
 
     // Application Load Balancers - Separate ALBs for each service
     const perplexicaALB = new elbv2.ApplicationLoadBalancer(this, 'PerplexicaALB', {
@@ -173,18 +181,18 @@ export class PerplexicaStack extends cdk.Stack {
       executionRole: perplexicaExecutionRole,
     });
 
-    // Add EFS volume to Perplexica task definition
-    perplexicaTaskDef.addVolume({
-      name: 'perplexica-efs-storage',
-      efsVolumeConfiguration: {
-        fileSystemId: perplexicaFileSystem.fileSystemId,
-        transitEncryption: 'ENABLED',
-        authorizationConfig: {
-          accessPointId: perplexicaAccessPoint.accessPointId,
-          iam: 'ENABLED',
-        },
-      },
-    });
+    // Add EFS volume to Perplexica task definition - TEMPORARILY DISABLED
+    // perplexicaTaskDef.addVolume({
+    //   name: 'perplexica-efs-storage',
+    //   efsVolumeConfiguration: {
+    //     fileSystemId: perplexicaFileSystem.fileSystemId,
+    //     transitEncryption: 'ENABLED',
+    //     authorizationConfig: {
+    //       accessPointId: perplexicaAccessPoint.accessPointId,
+    //       iam: 'ENABLED',
+    //     },
+    //   },
+    // });
 
     // Create execution role for SearXNG with ECR permissions
     const searxngExecutionRole = new iam.Role(this, 'SearxngTaskDefExecutionRole', {
@@ -265,12 +273,12 @@ export class PerplexicaStack extends cdk.Stack {
       },
     });
 
-    // Mount EFS volume in Perplexica container
-    perplexicaContainer.addMountPoints({
-      containerPath: '/home/perplexica',
-      sourceVolume: 'perplexica-efs-storage',
-      readOnly: false,
-    });
+    // Mount EFS volume in Perplexica container - TEMPORARILY DISABLED
+    // perplexicaContainer.addMountPoints({
+    //   containerPath: '/home/perplexica',
+    //   sourceVolume: 'perplexica-efs-storage',
+    //   readOnly: false,
+    // });
 
     perplexicaContainer.addPortMappings({
       containerPort: 80,
@@ -328,6 +336,9 @@ export class PerplexicaStack extends cdk.Stack {
       assignPublicIp: false,
       healthCheckGracePeriod: cdk.Duration.seconds(300), // 5 minutes grace period
       enableExecuteCommand: true,
+      vpcSubnets: {
+        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+      },
     });
 
     const searxngService = new ecs.FargateService(this, 'SearxngService', {
@@ -353,8 +364,24 @@ export class PerplexicaStack extends cdk.Stack {
     searxngService.attachToApplicationTargetGroup(searxngTargetGroup);
     litellmService.attachToApplicationTargetGroup(litellmTargetGroup);
 
-    // Allow Perplexica service to access EFS
-    perplexicaFileSystem.connections.allowDefaultPortFrom(perplexicaService.connections);
+    // Allow Perplexica service to access EFS - TEMPORARILY DISABLED
+    // perplexicaFileSystem.connections.allowDefaultPortFrom(perplexicaService.connections);
+    
+    // // Grant EFS permissions to the task role
+    // perplexicaTaskDef.taskRole.addToPrincipalPolicy(new iam.PolicyStatement({
+    //   effect: iam.Effect.ALLOW,
+    //   actions: [
+    //     'elasticfilesystem:ClientMount',
+    //     'elasticfilesystem:ClientWrite',
+    //     'elasticfilesystem:ClientRootAccess',
+    //   ],
+    //   resources: [perplexicaFileSystem.fileSystemArn],
+    //   conditions: {
+    //     StringEquals: {
+    //       'elasticfilesystem:AccessPointArn': perplexicaAccessPoint.accessPointArn,
+    //     },
+    //   },
+    // }));
 
     // CodeBuild Projects
     const perplexicaBuildProject = this.createPerplexicaBuildProject(
@@ -428,10 +455,10 @@ export class PerplexicaStack extends cdk.Stack {
       description: 'S3 Bucket for storing build artifacts',
     });
 
-    new cdk.CfnOutput(this, 'PerplexicaFileSystemId', {
-      value: perplexicaFileSystem.fileSystemId,
-      description: 'EFS File System ID for Perplexica persistent storage',
-    });
+    // new cdk.CfnOutput(this, 'PerplexicaFileSystemId', {
+    //   value: perplexicaFileSystem.fileSystemId,
+    //   description: 'EFS File System ID for Perplexica persistent storage',
+    // });
   }
 
   private createEcrRepositoriesWithFallback(): { perplexicaRepo: ecr.IRepository; searxngRepo: ecr.IRepository; litellmRepo: ecr.IRepository } {
@@ -764,82 +791,20 @@ def handler(event, context):
         phases: {
           pre_build: {
             commands: [
-              'echo Logging in to Amazon ECR...',
-              'aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com',
-              'echo Checking AWS CLI version...',
-              'aws --version',
-              'echo Attempting ECR Public authentication',
-              'aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws || echo "ECR Public login failed - continuing with Docker Hub direct access"',
-              'echo "Current directory contents:"',
-              'ls -la',
-              'echo "Checking for config directory in source artifact..."',
-              'ls -la config/ || echo "Config directory not found in source artifact"',
-              'echo "Backing up config files from source artifact..."',
-              'mkdir -p /tmp/backup-config',
-              'if [ -d "config" ]; then cp -r config/* /tmp/backup-config/; echo "Config files backed up"; else echo "No config directory to backup"; fi',
-              'echo "Contents of backup directory:"',
-              'ls -la /tmp/backup-config/ || echo "Backup directory is empty"',
-              'echo Cloning Perplexica repository...',
-              'rm -rf perplexica-repo',
-              'git clone https://github.com/ItzCrazyKns/Perplexica.git perplexica-repo',
-              'echo "Perplexica repository contents:"',
-              'ls -la perplexica-repo/',
-              'echo Copying Perplexica files to build directory...',
-              'cp -r perplexica-repo/* .',
-              'cp -r perplexica-repo/.* . 2>/dev/null || true',
-              'echo "Build directory contents after copying Perplexica files:"',
-              'ls -la',
-              'echo "Restoring config files from backup..."',
-              'ls -la /tmp/backup-config/ || echo "No backup config files found"',
-              'echo Copying config files from backup...',
-              'echo "Checking backup directory contents:"',
-              'ls -la /tmp/backup-config/ || echo "Backup directory not found"',
-              'if [ -f "/tmp/backup-config/perplexica-config.toml" ]; then echo "Found perplexica-config.toml, copying to config.toml"; cp /tmp/backup-config/perplexica-config.toml ./config.toml; else echo "ERROR: perplexica-config.toml not found in backup"; echo "Available files in backup:"; ls -la /tmp/backup-config/ || echo "No backup directory"; exit 1; fi',
-              'if [ -f "/tmp/backup-config/perplexica.dockerfile" ]; then echo "Found perplexica.dockerfile, copying to app.dockerfile"; cp /tmp/backup-config/perplexica.dockerfile ./app.dockerfile; else echo "ERROR: perplexica.dockerfile not found in backup";  echo "Available files in backup:"; ls -la /tmp/backup-config/ || echo "No backup directory"; exit 1; fi',
-              'if [ -f "/tmp/backup-config/perplexity-entrypoint.sh" ]; then echo "Found perplexity-entrypoint.sh, copying to entrypoint.sh"; cp /tmp/backup-config/perplexity-entrypoint.sh ./entrypoint.sh; else echo "ERROR: perplexity-entrypoint.sh not found in backup";  echo "Available files in backup:"; ls -la /tmp/backup-config/ || echo "No backup directory"; exit 1; fi',
-              'echo "Files after copying config:"',
-              'ls -la',
-              'echo Getting ALB DNS names from CloudFormation...',
-              'OUTPUTS=$(aws cloudformation describe-stacks --stack-name PerplexicaStack --query "Stacks[0].Outputs" --output json)',
-              'SEARXNG_DNS=$(echo $OUTPUTS | jq -r \'.[] | select(.OutputKey=="SearxngLoadBalancerDNS") | .OutputValue\')',
-              'LITELLM_DNS=$(echo $OUTPUTS | jq -r \'.[] | select(.OutputKey=="LitellmLoadBalancerDNS") | .OutputValue\')',
-              'echo "SearXNG ALB DNS: $SEARXNG_DNS"',
-              'echo "LiteLLM ALB DNS: $LITELLM_DNS"',
-              'if [ -z "$SEARXNG_DNS" ]; then echo "Error: Could not get SearXNG ALB DNS"; exit 1; fi',
-              'if [ -z "$LITELLM_DNS" ]; then echo "Error: Could not get LiteLLM ALB DNS"; exit 1; fi',
-              'echo Updating config with ALB DNS names...',
-              'sed -i "s|SEARXNG_ALB_DNS_PLACEHOLDER|$SEARXNG_DNS|g" ./config.toml',
-              'sed -i "s|LITELLM_ALB_DNS_PLACEHOLDER|$LITELLM_DNS|g" ./config.toml',
-              'echo "Updated config.toml contents:"',
-              'cat ./config.toml',
-
+              'chmod +x scripts/build-perplexica-prebuild.sh',
+              './scripts/build-perplexica-prebuild.sh',
             ],
           },
           build: {
             commands: [
-              'echo Build started on `date`',
-              'echo Validating required files...',
-              'if [ ! -f "app.dockerfile" ]; then echo "Error: app.dockerfile not found"; exit 1; fi',
-              'if [ ! -f "config.toml" ]; then echo "Error: config.toml not found"; exit 1; fi',
-              'echo Building the Docker image...',
-              'docker build -f app.dockerfile -t $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION .',
-              'echo Tagging Docker images...',
-              'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:latest',
-              'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
-              'echo Docker build completed successfully',
+              'chmod +x scripts/build-perplexica-build.sh',
+              './scripts/build-perplexica-build.sh',
             ],
           },
           post_build: {
             commands: [
-              'echo Post-build started on `date`',
-              'echo Pushing Docker images to ECR...',
-              'docker push $IMAGE_URI:latest',
-              'docker push $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
-              'echo Creating ECS image definitions file...',
-              'printf \'[{"name":"perplexica","imageUri":"%s"}]\' $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION > imagedefinitions.json',
-              'echo "Generated imagedefinitions.json:"',
-              'cat imagedefinitions.json',
-              'echo Build and push completed successfully on `date`',
+              'chmod +x scripts/build-perplexica-postbuild.sh',
+              './scripts/build-perplexica-postbuild.sh',
             ],
           },
         },
@@ -899,46 +864,20 @@ def handler(event, context):
         phases: {
           pre_build: {
             commands: [
-              'echo Logging in to Amazon ECR...',
-              'aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com',
-              'echo Checking AWS CLI version...',
-              'aws --version',
-              'echo Attempting ECR Public authentication',
-              'aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws || echo "ECR Public login failed - continuing with Docker Hub direct access"',
-              'echo Pulling base SearXNG image...',
-              'docker pull searxng/searxng:latest || (echo "Failed to pull from Docker Hub, trying without authentication..." && docker pull searxng/searxng:latest)',
+              'chmod +x scripts/build-searxng-prebuild.sh',
+              './scripts/build-searxng-prebuild.sh',
             ],
           },
           build: {
             commands: [
-              'echo Build started on `date`',
-              'echo Creating custom Dockerfile...',
-              'echo "FROM searxng/searxng:latest" > Dockerfile',
-              'echo "COPY config/settings.yml /etc/searxng/settings.yml" >> Dockerfile',
-              'echo "COPY config/limiter.toml /etc/searxng/limiter.toml" >> Dockerfile',
-              'echo "COPY config/searxng-uwsgi.ini /usr/local/searxng/searx/uwsgi.ini" >> Dockerfile',
-              'echo "ENTRYPOINT [\\\"/usr/local/searxng/entrypoint.sh\\\"]" >> Dockerfile',
-              'echo "Generated Dockerfile:"',
-              'cat Dockerfile',
-              'echo Building the Docker image...',
-              'docker build -t $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION .',
-              'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:latest',
-              'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
+              'chmod +x scripts/build-searxng-build.sh',
+              './scripts/build-searxng-build.sh',
             ],
           },
-          //'echo "COPY config/settings.yml /usr/local/searxng/searx/settings.yml" >> Dockerfile',
-          //'echo "COPY config/limiter.toml /usr/local/searxng/searx/limiter.toml" >> Dockerfile',
           post_build: {
             commands: [
-              'echo Build completed on `date`',
-              'echo Pushing the Docker images...',
-              'docker push $IMAGE_URI:latest',
-              'docker push $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
-              'echo Creating ECS image definitions file...',
-              'printf \'[{"name":"searxng","imageUri":"%s"}]\' $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION > imagedefinitions.json',
-              'echo "Generated imagedefinitions.json:"',
-              'cat imagedefinitions.json',
-              'echo Build and push completed successfully on `date`',
+              'chmod +x scripts/build-searxng-postbuild.sh',
+              './scripts/build-searxng-postbuild.sh',
             ],
           },
         },
@@ -1099,32 +1038,20 @@ def handler(event, context):
         phases: {
           pre_build: {
             commands: [
-              'echo Logging in to Amazon ECR...',
-              'aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com',
+              'chmod +x scripts/build-litellm-prebuild.sh',
+              './scripts/build-litellm-prebuild.sh',
             ],
           },
           build: {
             commands: [
-              'echo Build started on `date`',
-              'echo Validating required files...',
-              'if [ ! -f "litellm.dockerfile" ]; then echo "Error: litellm.dockerfile not found"; exit 1; fi',
-              'if [ ! -f "config/litellm-config.yaml" ]; then echo "Error: config/litellm-config.yaml not found"; exit 1; fi',
-              'echo "Contents of litellm.dockerfile:"',
-              'cat litellm.dockerfile',
-              'echo Building the Docker image...',
-              'docker build -f litellm.dockerfile -t $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION .',
-              'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:latest',
-              'docker tag $IMAGE_REPO_NAME:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
+              'chmod +x scripts/build-litellm-build.sh',
+              './scripts/build-litellm-build.sh',
             ],
           },
           post_build: {
             commands: [
-              'echo Build completed on `date`',
-              'echo Pushing the Docker images...',
-              'docker push $IMAGE_URI:latest',
-              'docker push $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
-              'echo Writing image definitions file...',
-              'printf \'[{"name":"litellm","imageUri":"%s"}]\' $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION > imagedefinitions.json',
+              'chmod +x scripts/build-litellm-postbuild.sh',
+              './scripts/build-litellm-postbuild.sh',
             ],
           },
         },

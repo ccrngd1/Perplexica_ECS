@@ -24,20 +24,32 @@ mkdir -p temp/litellm-config
 
 # Copy Perplexica config files
 mkdir -p temp/perplexica-config/config
+mkdir -p temp/perplexica-config/scripts
 cp config/perplexica-config.toml temp/perplexica-config/config/
 cp config/perplexica.dockerfile temp/perplexica-config/config/
 cp config/perplexity-entrypoint.sh temp/perplexica-config/config/
+cp scripts/build-perplexica-prebuild.sh temp/perplexica-config/scripts/
+cp scripts/build-perplexica-build.sh temp/perplexica-config/scripts/
+cp scripts/build-perplexica-postbuild.sh temp/perplexica-config/scripts/
 
 # Copy SearXNG config files
 mkdir -p temp/searxng-config/config
+mkdir -p temp/searxng-config/scripts
 cp config/searxng-settings.yml temp/searxng-config/config/settings.yml
 cp config/searxng-limiter.toml temp/searxng-config/config/limiter.toml
 cp config/searxng-uwsgi.ini temp/searxng-config/config/
+cp scripts/build-searxng-prebuild.sh temp/searxng-config/scripts/
+cp scripts/build-searxng-build.sh temp/searxng-config/scripts/
+cp scripts/build-searxng-postbuild.sh temp/searxng-config/scripts/
 
 # Copy LiteLLM config files
 mkdir -p temp/litellm-config/config
+mkdir -p temp/litellm-config/scripts
 cp config/litellm-config.yaml temp/litellm-config/config/
 cp config/litellm.dockerfile temp/litellm-config/litellm.dockerfile
+cp scripts/build-litellm-prebuild.sh temp/litellm-config/scripts/
+cp scripts/build-litellm-build.sh temp/litellm-config/scripts/
+cp scripts/build-litellm-postbuild.sh temp/litellm-config/scripts/
 
 # Create zip files
 cd temp/perplexica-config
@@ -66,8 +78,42 @@ aws s3 cp temp/litellm-config.zip s3://$BUCKET_NAME/litellm-config.zip
 rm -rf temp/
 
 echo "All configuration files uploaded successfully!"
-echo "- Perplexica config uploaded"
-echo "- SearXNG config uploaded" 
-echo "- LiteLLM config uploaded"
 echo ""
-echo "You can now trigger the pipelines to build and deploy all applications."
+
+exit
+
+# Trigger the pipelines
+echo "Triggering CodePipeline executions..."
+
+# Get pipeline names - tab-separated output
+PIPELINES=$(aws codepipeline list-pipelines --query 'pipelines[*].name' --output text)
+
+echo "DEBUG: Raw pipeline output: '$PIPELINES'"
+
+# Convert tabs to newlines and process each pipeline
+echo "$PIPELINES" | tr '\t' '\n' | while read -r pipeline; do
+  # Skip empty lines
+  [ -z "$pipeline" ] && continue
+  
+  echo "DEBUG: Checking pipeline: '$pipeline'"
+  
+  if echo "$pipeline" | grep -qi "perplexica"; then
+    if echo "$pipeline" | grep -qi "pipeline"; then
+      echo "Starting Perplexica pipeline: $pipeline"
+      aws codepipeline start-pipeline-execution --name "$pipeline"
+    fi
+  elif echo "$pipeline" | grep -qi "searxng"; then
+    if echo "$pipeline" | grep -qi "pipeline"; then
+      echo "Starting SearXNG pipeline: $pipeline"
+      aws codepipeline start-pipeline-execution --name "$pipeline"
+    fi
+  elif echo "$pipeline" | grep -qi "litellm"; then
+    if echo "$pipeline" | grep -qi "pipeline"; then
+      echo "Starting LiteLLM pipeline: $pipeline"
+      aws codepipeline start-pipeline-execution --name "$pipeline"
+    fi
+  fi
+done
+
+echo ""
+echo "Pipeline trigger complete!"
