@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+cd /home/perplexica
+
 echo "Build started on $(date)"
 
 echo "Validating required files..."

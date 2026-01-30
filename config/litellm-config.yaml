@@ -1,20 +1,22 @@
 model_list:
   - model_name: gpt-4o
     litellm_params:
-      model: bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0
-      aws_region_name: us-east-1
+      model: bedrock/us.amazon.nova-pro-v1:0
+      aws_region_name: us-east-1                                                                                                                                                                           
+      #fallbacks:                                                                                                                                                                                                                                  
+      #  - model: bedrock/us.anthropic.claude-3-5-sonnet-20240620-v1:0                                                                                                                                                                                
+      #  - model: bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0   
   - model_name: text-embedding-3-large
     litellm_params:
-      model: amazon.titan-embed-text-v1
-      aws_region_name: us-east-1
+      model: bedrock/amazon.nova-2-multimodal-embeddings-v1:0
+      aws_region_name: us-east-1   
 
 litellm_settings:
-  set_verbose: false
+  log_raw_request_response: True
+  set_verbose: true
   drop_params: true
-  modify_params: true
-  # Disable caching to avoid external dependencies
-  cache: false
-  # CORS settings
+  modify_params: true 
+  cache: false 
   allowed_origins: ["*"]
 
 general_settings:

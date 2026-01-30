@@ -28,6 +28,10 @@ fi
 echo "Contents of backup directory:"
 ls -la /tmp/backup-config/ || echo "Backup directory is empty"
 
+echo "Creating and changing to /home/perplexica directory..."
+mkdir -p /home/perplexica
+cd /home/perplexica
+
 echo "Cloning Perplexica repository..."
 rm -rf perplexica-repo
 git clone https://github.com/ItzCrazyKns/Perplexica.git perplexica-repo
@@ -69,14 +73,21 @@ else
     exit 1
 fi
 
-if [ -f "/tmp/backup-config/perplexity-entrypoint.sh" ]; then 
+if [ -f "/tmp/backup-config/perplexity-entrypoint.sh" ]; then
     echo "Found perplexity-entrypoint.sh, copying to entrypoint.sh"
     cp /tmp/backup-config/perplexity-entrypoint.sh ./entrypoint.sh
-else 
+else
     echo "ERROR: perplexity-entrypoint.sh not found in backup"
     echo "Available files in backup:"
     ls -la /tmp/backup-config/ || echo "No backup directory"
     exit 1
+fi
+
+if [ -f "/tmp/backup-config/next.config.mjs" ]; then
+    echo "Found custom next.config.mjs, copying to override upstream config"
+    cp /tmp/backup-config/next.config.mjs ./next.config.mjs
+else
+    echo "WARNING: Custom next.config.mjs not found in backup - using upstream config"
 fi
 
 echo "Files after copying config:"

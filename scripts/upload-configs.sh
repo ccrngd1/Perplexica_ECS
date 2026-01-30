@@ -28,6 +28,7 @@ mkdir -p temp/perplexica-config/scripts
 cp config/perplexica-config.toml temp/perplexica-config/config/
 cp config/perplexica.dockerfile temp/perplexica-config/config/
 cp config/perplexity-entrypoint.sh temp/perplexica-config/config/
+cp config/next.config.mjs temp/perplexica-config/config/
 cp scripts/build-perplexica-prebuild.sh temp/perplexica-config/scripts/
 cp scripts/build-perplexica-build.sh temp/perplexica-config/scripts/
 cp scripts/build-perplexica-postbuild.sh temp/perplexica-config/scripts/
@@ -78,42 +79,3 @@ aws s3 cp temp/litellm-config.zip s3://$BUCKET_NAME/litellm-config.zip
 rm -rf temp/
 
 echo "All configuration files uploaded successfully!"
-echo ""
-
-exit
-
-# Trigger the pipelines
-echo "Triggering CodePipeline executions..."
-
-# Get pipeline names - tab-separated output
-PIPELINES=$(aws codepipeline list-pipelines --query 'pipelines[*].name' --output text)
-
-echo "DEBUG: Raw pipeline output: '$PIPELINES'"
-
-# Convert tabs to newlines and process each pipeline
-echo "$PIPELINES" | tr '\t' '\n' | while read -r pipeline; do
-  # Skip empty lines
-  [ -z "$pipeline" ] && continue
-  
-  echo "DEBUG: Checking pipeline: '$pipeline'"
-  
-  if echo "$pipeline" | grep -qi "perplexica"; then
-    if echo "$pipeline" | grep -qi "pipeline"; then
-      echo "Starting Perplexica pipeline: $pipeline"
-      aws codepipeline start-pipeline-execution --name "$pipeline"
-    fi
-  elif echo "$pipeline" | grep -qi "searxng"; then
-    if echo "$pipeline" | grep -qi "pipeline"; then
-      echo "Starting SearXNG pipeline: $pipeline"
-      aws codepipeline start-pipeline-execution --name "$pipeline"
-    fi
-  elif echo "$pipeline" | grep -qi "litellm"; then
-    if echo "$pipeline" | grep -qi "pipeline"; then
-      echo "Starting LiteLLM pipeline: $pipeline"
-      aws codepipeline start-pipeline-execution --name "$pipeline"
-    fi
-  fi
-done
-
-echo ""
-echo "Pipeline trigger complete!"

@@ -263,6 +263,11 @@ export class PerplexicaStack extends cdk.Stack {
         SEARXNG_API_URL: `http://${searxngALB.loadBalancerDnsName}`,
         DATA_DIR: '/home/perplexica',
         PORT: '80',
+        NODE_ENV: 'development',
+        LOG_LEVEL: 'debug',
+        NODE_OPTIONS: '--enable-source-maps --trace-warnings --trace-uncaught',
+        DEBUG: '*',
+        VERBOSE: 'true',
       },
       healthCheck: {
         command: ['CMD-SHELL', 'exit 0'], // Always healthy
@@ -293,6 +298,8 @@ export class PerplexicaStack extends cdk.Stack {
       }),
       environment: {
         GRANIAN_PORT: '80',
+        LITELLM_LOG: 'DEBUG',
+        JSON_LOGS: 'True',
       },
       healthCheck: {
         command: ['CMD-SHELL', 'exit 0'], // Always healthy
@@ -309,11 +316,16 @@ export class PerplexicaStack extends cdk.Stack {
     });
 
     const litellmContainer = litellmTaskDef.addContainer('litellm', {
-      image: ecs.ContainerImage.fromRegistry('public.ecr.aws/nginx/nginx:latest'), // Nginx placeholder      
+      image: ecs.ContainerImage.fromRegistry('public.ecr.aws/nginx/nginx:latest'), // Nginx placeholder
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'litellm',
         logRetention: logs.RetentionDays.ONE_WEEK,
-      }), 
+      }),
+      environment: {
+        LITELLM_LOG: 'DEBUG',
+        SET_VERBOSE: 'True',
+        JSON_LOGS: 'True',
+      },
       healthCheck: {
         command: ['CMD-SHELL', 'exit 0'], // Always healthy
         interval: cdk.Duration.seconds(30),
@@ -779,6 +791,7 @@ def handler(event, context):
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
         privileged: true,
+        computeType: codebuild.ComputeType.MEDIUM, // 7GB RAM instead of 3GB
       },
       environmentVariables: {
         AWS_DEFAULT_REGION: { value: this.region },
